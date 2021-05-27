@@ -1,0 +1,2581 @@
+OBJECT Codeunit 52102437 Shipment Mgt. Buffer
+{
+  OBJECT-PROPERTIES
+  {
+    Date=23/02/21;
+    Time=08:06:57;
+    Modified=Yes;
+    Version List=SPM1.1.1,GAP006,GAP017,CR14,CR61,i240,I374,I382,i409,I416,I499,i508,i420,i534,Brexit,1164,1409;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 5773=rm,
+                TableData 7312=rm,
+                TableData 7345=rm;
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      WarehouseShipmentWasnotCreatedMsg@52102435 : TextConst 'ENU=The warehouse shipment was not created because an open warehouse shipment exists for the Sales Header and Shipping Advice is %1.\\You must add the item(s) as new line(s) to the existing warehouse shipment or change Shipping Advice to Partial.;ENG=The warehouse shipment was not created because an open warehouse shipment exists for the Sales Header and Shipping Advice is %1.\\You must add the item(s) as new line(s) to the existing warehouse shipment or change Shipping Advice to Partial.';
+      ThereAreNoWareHouseShipmentLinesCreatedMsg@52102438 : TextConst 'ENU=There are no Warehouse Shipment Lines created.;ENG=There are no Warehouse Shipment Lines created.';
+      WarehouseShipmentHaveBeenCreatedMsg@52102437 : TextConst 'ENU=%1 Warehouse Shipment(s) have been created.;ENG=%1 Warehouse Shipments have been created.';
+      LocationDoesNotRequirePicksErr@52102436 : TextConst 'ENU=Location %1 does not require picks.;ENG=Location %1 does not require picks.';
+      ShipMgtSetup@52102439 : Record 52102435;
+      SalesSetup@50004 : Record 311;
+      BSShipmentMgt@50000 : Codeunit 50026;
+      GotShipMgtSetup@52102440 : Boolean;
+      NothingToHandleErr@52102441 : TextConst 'ENU=There is nothing to handle.;ENG=There is nothing to handle.';
+      NothingToCreateErr@52102442 : TextConst 'ENU=There is nothing to create.;ENG=There is nothing to create.';
+      NothingToPostErr@52102443 : TextConst 'ENU=There is nothing to post.;ENG=There is nothing to post.';
+      ConsolidateShipmentLineErr@50001 : TextConst 'ENU=There was a problem consolidating %1 with %2.;ENG=There was a problem consolidating %1 with %2.';
+      ShowOption@50002 : 'All,Show Unplanned,Show Planned';
+      GotSalesSetup@50003 : Boolean;
+      ConfirmPostCaption@50005 : TextConst 'ENU=Post %1 Whse. Shipment Line(s) for %2 %3?;ENG=Post %1 Whse. Shipment Line(s) for %2 %3?';
+      ConfirmLoadNoCaption@50006 : TextConst 'ENU=Load No. is not specified for %1 %2. Proceed?;ENG=Load No. is not specified for %1 %2. Proceed?';
+      SingleGroupPostingErrorCaption@50007 : TextConst 'ENU=You cannot post multiple shipment groups at once. Please make sure only one group is selected and try again.;ENG=You cannot post multiple shipment groups at once. Please make sure only one group is selected and try again.';
+      PostPartShipmentConf@50009 : TextConst 'ENU=This load contains a part shipment.\Do you want to proceed with posting?;ENG=This load contains a part shipment.\Do you want to proceed with posting?';
+      Error1@50008 : TextConst 'ENU=This is not sent to XPO via autometic method . Please reconfirm with XPO Prior to Post and raise an Incident to Service Desk for any issue';
+      TempTransferShipmentHeader@50010 : TEMPORARY Record 5744;
+
+    PROCEDURE CalcShipmentMgtBuffer@52102436(VAR ShipmentMgtGroupFilter@52102437 : Record 52102441;VAR ShipmentManagementBuffer@52102435 : Record 52102442;LocationCode@52102438 : Code[10];ShipmentDateFilter@52102439 : Text;OnlyUnassignedLines@52102440 : Boolean);
+    VAR
+      ShipmentManagementGroup@52102436 : Record 52102441;
+    BEGIN
+      ShipmentManagementGroup.COPYFILTERS(ShipmentMgtGroupFilter);
+      AddShipmentMgtEntryToBuffer(ShipmentManagementGroup,ShipmentManagementBuffer,LocationCode,ShipmentDateFilter);
+      ShipmentManagementBuffer.SETRANGE(Indentation,0);
+      IF ShipmentManagementBuffer.FINDSET THEN
+        REPEAT
+          AddSalesDocumentsToShipmentMgtBuffer(ShipmentManagementBuffer,OnlyUnassignedLines);
+          AddPurchaseDocumentsToShipmentMgtBuffer(ShipmentManagementBuffer,OnlyUnassignedLines);
+          AddTransferOrdersToShipmentMgtBuffer(ShipmentManagementBuffer,OnlyUnassignedLines);
+        UNTIL ShipmentManagementBuffer.NEXT = 0;
+
+      ShipmentManagementBuffer.SETRANGE(Indentation);
+      UpdateShipmentMgtBufferTotals(ShipmentManagementBuffer);
+    END;
+
+    LOCAL PROCEDURE UpdateShipmentMgtBufferTotals@52102448(VAR ShipmentManagementBuffer1@52102435 : TEMPORARY Record 52102442);
+    VAR
+      ShipmentManagementBuffer2@52102436 : TEMPORARY Record 52102442;
+    BEGIN
+      ShipmentManagementBuffer2.COPY(ShipmentManagementBuffer1,TRUE);
+      ShipmentManagementBuffer1.SETFILTER(Indentation,'<%1',2);
+      IF ShipmentManagementBuffer1.FINDSET THEN
+        REPEAT
+          ShipmentManagementBuffer2.SETRANGE("Shipment Mgt. Group No.",ShipmentManagementBuffer1."Shipment Mgt. Group No.");
+          IF ShipmentManagementBuffer1."Delivery Order" = 0 THEN
+            ShipmentManagementBuffer2.SETFILTER("Delivery Order",'>%1',ShipmentManagementBuffer1."Delivery Order")
+          ELSE
+            ShipmentManagementBuffer2.SETRANGE("Delivery Order",ShipmentManagementBuffer1."Delivery Order");
+          ShipmentManagementBuffer2.SETFILTER(Indentation,'>%1',ShipmentManagementBuffer1.Indentation);
+          ShipmentManagementBuffer2.CALCSUMS(Volume,"Net Weight","Gross Weight","Amount (LCY)");
+          ShipmentManagementBuffer1.Volume :=  ShipmentManagementBuffer2.Volume;
+          ShipmentManagementBuffer1."Net Weight" := ShipmentManagementBuffer2."Net Weight";
+          ShipmentManagementBuffer1."Gross Weight" := ShipmentManagementBuffer2."Gross Weight";
+          ShipmentManagementBuffer1."Amount (LCY)" := ShipmentManagementBuffer2."Amount (LCY)";
+          OnUpdateShipmentMgtBufferTotal(ShipmentManagementBuffer1,ShipmentManagementBuffer2);
+
+          ShipmentManagementBuffer1.MODIFY;
+        UNTIL ShipmentManagementBuffer1.NEXT = 0;
+
+      ShipmentManagementBuffer1.SETRANGE(Indentation);
+      IF ShipmentManagementBuffer1.FINDFIRST THEN;
+    END;
+
+    LOCAL PROCEDURE AddShipmentMgtEntryToBuffer@52102435(VAR ShipmentManagementGroup@52102435 : Record 52102441;VAR ShipmentManagementBuffer@52102436 : Record 52102442;LocationCode@52102438 : Code[10];ShipmentDateFilter@52102437 : Text);
+    VAR
+      ShipmentManagementEntry@52102439 : Record 52102443;
+      SalesShipmentLine@52102442 : Record 111;
+      ShptCount@52102440 : Integer;
+      PickCount@52102441 : Integer;
+    BEGIN
+      IF LocationCode <> '' THEN
+        ShipmentManagementGroup.SETRANGE("Location Code",LocationCode);
+      // rem TM MD GAP006 03/10/17 START
+      //IF ShipmentDateFilter <> 0D THEN
+      //  ShipmentManagementGroup.SETRANGE("Shipment/Expected Receipt Date",ShipmentDateFilter);
+      // rem TM MD GAP006 03/10/17 END
+      // TM MD GAP006 03/10/17 START
+      IF ShipmentDateFilter <> '' THEN
+        ShipmentManagementGroup.SETFILTER("Shipment/Expected Receipt Date",ShipmentDateFilter);
+      // TM MD GAP006 03/10/17 END
+
+      // TM MD GAP006 10/10/17 START
+      CASE ShowOption OF
+        ShowOption::"Show Planned":
+          ShipmentManagementGroup.SETFILTER("Load No.",'<>%1','');
+        ShowOption::"Show Unplanned":
+          ShipmentManagementGroup.SETFILTER("Load No.",'%1','');
+      END;
+      // TM MD GAP006 10/10/17 END
+
+      IF ShipmentManagementGroup.FINDSET THEN
+        REPEAT
+          ShipmentManagementEntry.SETRANGE("Shipment Mgt. Group No.",ShipmentManagementGroup."Entry No.");
+          SalesShipmentLine.SETCURRENTKEY("Shipment Mgt. Group No.");
+          SalesShipmentLine.SETRANGE("Shipment Mgt. Group No.",ShipmentManagementGroup."Entry No.");
+          IF NOT ShipmentManagementEntry.ISEMPTY OR NOT SalesShipmentLine.ISEMPTY THEN BEGIN
+            ShipmentManagementBuffer.TRANSFERFIELDS(ShipmentManagementGroup);
+            ShipmentManagementBuffer."Shipment Mgt. Group No." := ShipmentManagementGroup."Entry No.";
+            ShipmentManagementBuffer."Instance No." := ShipmentManagementGroup."Instance No.";
+            CalcNoOfShipments(ShptCount,ShipmentManagementBuffer);
+            ShipmentManagementBuffer."No. of Shipments" := ShptCount;
+            CalcNoOfPicks(PickCount,ShipmentManagementBuffer);
+            ShipmentManagementBuffer."No. of Picks" := PickCount;
+            ShipmentManagementBuffer."Line Style" := ShipmentManagementBuffer.SetLineStyle;
+            ShipmentManagementBuffer."Shipment Datetime" := CREATEDATETIME(ShipmentManagementBuffer."Shipment/Expected Receipt Date",ShipmentManagementBuffer."Shipment Time"); // TM VZ 01/11/17 CR61
+            //TM LV I382 04/01/18 START
+            ShipmentManagementGroup.CALCFIELDS("Must Be Sheeted");
+            ShipmentManagementBuffer."Must Be Sheeted" := ShipmentManagementGroup."Must Be Sheeted";
+            //TM LV I382 04/01/18 END
+            ShipmentManagementBuffer.AddNewEntry;
+          END;
+        UNTIL ShipmentManagementGroup.NEXT = 0;
+    END;
+
+    LOCAL PROCEDURE AddSalesDocumentsToShipmentMgtBuffer@52102438(VAR ShipmentMgtBuffer@52102435 : TEMPORARY Record 52102442;OnlyUnassignedLines@52102444 : Boolean);
+    VAR
+      ShipmentMgtBuffer2@52102437 : TEMPORARY Record 52102442;
+      SalesHeader@52102438 : Record 36;
+      ShiptoAddress@52102440 : Record 222;
+      ShipmentManagementEntry@52102439 : Record 52102443;
+      Customer@52102436 : Record 18;
+      SalesLine@52102442 : Record 37;
+      WhseShptLine@52102443 : Record 7321;
+      RecRef@52102446 : RecordRef;
+      RecRef2@52102447 : RecordRef;
+      ShipmentMgtTaskMgt@52102441 : Codeunit 52102438;
+      WhseShptLineExists@52102445 : Boolean;
+      Handled@52102448 : Boolean;
+      AddSalesLine@52102449 : Boolean;
+    BEGIN
+      ShipmentMgtBuffer2 := ShipmentMgtBuffer;
+
+      //add sales documents
+      ShipmentManagementEntry.SETRANGE("Shipment Mgt. Group No.",ShipmentMgtBuffer."Shipment Mgt. Group No.");
+      ShipmentManagementEntry.SETRANGE("Source Type",DATABASE::"Sales Header");
+      ShipmentManagementEntry.SETFILTER("Document Type",'%1|%2',SalesHeader."Document Type"::Order,SalesHeader."Document Type"::"Return Order");
+      ShipmentManagementEntry.SETCURRENTKEY("Shipment Mgt. Group No.","Source Type","Document Type","Destination No.","Ship-to Code","Post Code");
+      IF ShipmentManagementEntry.FINDSET THEN
+        REPEAT
+          SalesHeader.GET(ShipmentManagementEntry."Document Type",ShipmentManagementEntry."Document No.");
+          RecRef2.GETTABLE(SalesHeader);
+          IF ShipmentMgtTaskMgt.HeaderReadyForShipmentMgt(RecRef2) THEN BEGIN
+            SalesLine.GET(ShipmentManagementEntry."Document Type",ShipmentManagementEntry."Document No.",ShipmentManagementEntry."Document Line No.");
+
+            WhseShptLine.SETRANGE("Source Type",DATABASE::"Sales Line");
+            WhseShptLine.SETRANGE("Source Subtype",SalesLine."Document Type");
+            WhseShptLine.SETRANGE("Source No.",SalesLine."Document No.");
+            WhseShptLine.SETRANGE("Source Line No.",SalesLine."Line No.");
+            WhseShptLineExists := WhseShptLine.FINDFIRST;
+
+            IF NOT (WhseShptLineExists AND OnlyUnassignedLines) THEN BEGIN
+              SalesHeader.GET(ShipmentManagementEntry."Document Type",ShipmentManagementEntry."Document No.");
+              RecRef.GETTABLE(SalesHeader);
+              IF ShipmentMgtTaskMgt.HeaderReadyForShipmentMgt(RecRef) THEN BEGIN
+                BeforeAddSalesDocumentLineToShipmentMgtBuffer(SalesLine,AddSalesLine,Handled);
+                IF (NOT Handled) OR (AddSalesLine AND Handled) THEN BEGIN
+                  ShipmentMgtBuffer.INIT;
+                  ShipmentMgtBuffer."Shipment Mgt. Group No." := ShipmentManagementEntry."Shipment Mgt. Group No.";
+                  ShipmentMgtBuffer."Source Type" := ShipmentManagementEntry."Source Type";
+                  ShipmentMgtBuffer."Document Type" := ShipmentManagementEntry."Document Type";
+                  ShipmentMgtBuffer."Document No." := ShipmentManagementEntry."Document No.";
+                  ShipmentMgtBuffer."Document Line No." := ShipmentManagementEntry."Document Line No.";
+                  ShipmentMgtBuffer.Indentation := 2;
+                  CASE ShipmentMgtBuffer."Document Type" OF
+                    ShipmentMgtBuffer."Document Type"::Order:
+                      ShipmentMgtBuffer.City := SalesHeader."Ship-to City";
+                    ShipmentMgtBuffer."Document Type"::"Return Order":
+                      IF ShiptoAddress.GET(SalesHeader."Sell-to Customer No.",SalesHeader."Ship-to Code") THEN
+                        ShipmentMgtBuffer.City := ShiptoAddress.City;
+                  END;
+                  ShipmentMgtBuffer."Country/Region Code" := SalesHeader."Ship. Mgt. Country/Region Code";
+                  ShipmentMgtBuffer."Delivery Order" := ShipmentManagementEntry."Delivery Order";
+
+                  //TCS SR Brexit 25/02/19 START
+                  ShipmentMgtBuffer."Port of Loading" := SalesHeader."Port Of Loading";
+                  ShipmentMgtBuffer."Port of Discharge" := SalesHeader."Port Of Discharge";
+                  //TCS SR Brexit 25/02/19 END
+
+                  // TM AKH GAP006 25/08/17 START
+                  BSShipmentMgt.BeforeShipmentMgtBufferInsert(ShipmentMgtBuffer);
+                  // TM AKH GAP006 25/08/17 END
+                  ShipmentMgtBuffer.AddNewEntry;
+
+                  AddDropNoToShipmentMgtBuffer(ShipmentMgtBuffer,ShipmentManagementEntry."Source Type");
+
+                  ShipmentMgtBuffer."Item No." := SalesLine."No.";
+                  ShipmentMgtBuffer."Variant Code" := SalesLine."Variant Code";
+                  ShipmentMgtBuffer.Description := SalesLine.Description;
+                  ShipmentMgtBuffer.Quantity := SalesLine."Outstanding Quantity";
+                  ShipmentMgtBuffer."Quantity (Base)" := SalesLine."Outstanding Qty. (Base)";
+                  ShipmentMgtBuffer."Unit of Measure Code" := SalesLine."Unit of Measure Code";
+
+                  //add the volume, net weight, gross weight, amount
+                  ShipmentMgtBuffer.Volume := SalesLine."Outstanding Quantity" * SalesLine."Unit Volume";
+                  ShipmentMgtBuffer."Net Weight" := SalesLine."Outstanding Quantity" * SalesLine."Net Weight";
+                  ShipmentMgtBuffer."Gross Weight" := SalesLine."Outstanding Quantity" * SalesLine."Gross Weight";
+                  ShipmentMgtBuffer."Amount (LCY)" := SalesLine."Outstanding Amount (LCY)";
+
+                  IF WhseShptLineExists THEN BEGIN
+                    WhseShptLine.CALCFIELDS("Pick Qty. (Base)");
+                    ShipmentMgtBuffer."Shipment No." := WhseShptLine."No.";
+                    ShipmentMgtBuffer."Qty. to Ship (Base)" := WhseShptLine."Qty. to Ship (Base)";
+                    ShipmentMgtBuffer."Pick Quantity (Base)" := WhseShptLine."Pick Qty. (Base)";
+                    ShipmentMgtBuffer."Qty. Picked (Base)" := WhseShptLine."Qty. Picked (Base)";
+                  END;
+                  ShipmentMgtBuffer."Delivery Area Code" := STRSUBSTNO('%1/%2',ShipmentMgtBuffer."Document No.",ShipmentMgtBuffer."Document Line No.");
+                  ShipmentMgtBuffer."Line Style" := ShipmentMgtBuffer.SetLineStyle;
+                  ShipmentMgtBuffer.MODIFY;
+                  AfterAddSalesDocumentLineToShipmentMgtBuffer(SalesLine);
+                END;
+              END;
+            END;
+          END;
+        UNTIL ShipmentManagementEntry.NEXT = 0;
+
+      ShipmentMgtBuffer.GET(ShipmentMgtBuffer2."Entry No.");
+    END;
+
+    LOCAL PROCEDURE AddPurchaseDocumentsToShipmentMgtBuffer@52102463(VAR ShipmentMgtBuffer@52102435 : TEMPORARY Record 52102442;OnlyUnassignedLines@52102444 : Boolean);
+    VAR
+      ShipmentMgtBuffer2@52102437 : TEMPORARY Record 52102442;
+      PurchaseHeader@52102438 : Record 38;
+      OrderAddress@52102440 : Record 224;
+      ShipmentManagementEntry@52102439 : Record 52102443;
+      Vendor@52102436 : Record 23;
+      PurchaseLine@52102442 : Record 39;
+      RecRef@52102443 : RecordRef;
+      ShipmentMgtTaskMgt@52102441 : Codeunit 52102438;
+      WhseShptLine@50001 : Record 7321;
+      WhseShptLineExists@50000 : Boolean;
+      Handled@50003 : Boolean;
+      AddPurchaseLine@50002 : Boolean;
+    BEGIN
+      ShipmentMgtBuffer2 := ShipmentMgtBuffer;
+
+      //add purchase documents
+      ShipmentManagementEntry.SETRANGE("Shipment Mgt. Group No.",ShipmentMgtBuffer."Shipment Mgt. Group No.");
+      ShipmentManagementEntry.SETRANGE("Source Type",DATABASE::"Purchase Header");
+      ShipmentManagementEntry.SETFILTER("Document Type",'%1|%2',PurchaseHeader."Document Type"::Order,PurchaseHeader."Document Type"::"Return Order");
+      ShipmentManagementEntry.SETCURRENTKEY("Shipment Mgt. Group No.","Source Type","Document Type","Destination No.","Ship-to Code","Post Code");
+      IF ShipmentManagementEntry.FINDSET THEN
+        REPEAT
+          PurchaseLine.GET(ShipmentManagementEntry."Document Type",ShipmentManagementEntry."Document No.",ShipmentManagementEntry."Document Line No.");
+
+          // TM MD 08/11/17 i218 START
+          WhseShptLine.SETRANGE("Source Type",DATABASE::"Purchase Line");
+          WhseShptLine.SETRANGE("Source Subtype",PurchaseLine."Document Type");
+          WhseShptLine.SETRANGE("Source No.",PurchaseLine."Document No.");
+          WhseShptLine.SETRANGE("Source Line No.",PurchaseLine."Line No.");
+          WhseShptLineExists := WhseShptLine.FINDFIRST;
+          // TM MD 08/11/17 i218 END
+
+          IF NOT OnlyUnassignedLines THEN BEGIN
+            PurchaseHeader.GET(ShipmentManagementEntry."Document Type",ShipmentManagementEntry."Document No.");
+            RecRef.GETTABLE(PurchaseHeader);
+            IF ShipmentMgtTaskMgt.HeaderReadyForShipmentMgt(RecRef) THEN BEGIN
+              // TM MD i218 15/11/17 START
+              BeforeAddPurchaseDocumentLineToShipmentMgtBuffer(PurchaseLine,AddPurchaseLine,Handled);
+              IF (NOT Handled) OR (AddPurchaseLine AND Handled) THEN BEGIN
+              // TM MD i218 15/11/17 END
+                ShipmentMgtBuffer.INIT;
+                ShipmentMgtBuffer."Shipment Mgt. Group No." := ShipmentManagementEntry."Shipment Mgt. Group No.";
+                ShipmentMgtBuffer."Source Type" := ShipmentManagementEntry."Source Type";
+                ShipmentMgtBuffer."Document Type" := ShipmentManagementEntry."Document Type";
+                ShipmentMgtBuffer."Document No." := ShipmentManagementEntry."Document No.";
+                ShipmentMgtBuffer."Document Line No." := ShipmentManagementEntry."Document Line No.";
+                ShipmentMgtBuffer.Indentation := 2;
+                CASE ShipmentMgtBuffer."Document Type" OF
+                  ShipmentMgtBuffer."Document Type"::Order:
+                    ShipmentMgtBuffer.City := PurchaseHeader."Buy-from City";
+                  ShipmentMgtBuffer."Document Type"::"Return Order":
+                    IF OrderAddress.GET(PurchaseHeader."Buy-from Vendor No.",PurchaseHeader."Order Address Code") THEN
+                      ShipmentMgtBuffer.City := OrderAddress.City
+                    ELSE
+                      ShipmentMgtBuffer.City := PurchaseHeader."Buy-from City";
+                END;
+                ShipmentMgtBuffer."Country/Region Code" := PurchaseHeader."Ship. Mgt. Country/Region Code";
+                ShipmentMgtBuffer."Delivery Order" := ShipmentManagementEntry."Delivery Order";
+                // TM MD GAP006 04/10/17 START
+                BSShipmentMgt.BeforeShipmentMgtBufferInsert(ShipmentMgtBuffer);
+                // TM MD GAP006 04/10/17 END
+                ShipmentMgtBuffer.AddNewEntry;
+
+                AddDropNoToShipmentMgtBuffer(ShipmentMgtBuffer,ShipmentManagementEntry."Source Type");
+
+                ShipmentMgtBuffer."Item No." := PurchaseLine."No.";
+                ShipmentMgtBuffer."Variant Code" := PurchaseLine."Variant Code";
+                ShipmentMgtBuffer.Description := PurchaseLine.Description;
+                ShipmentMgtBuffer.Quantity := PurchaseLine."Outstanding Quantity";
+                ShipmentMgtBuffer."Quantity (Base)" := PurchaseLine."Outstanding Qty. (Base)";
+                ShipmentMgtBuffer."Unit of Measure Code" := PurchaseLine."Unit of Measure Code";
+
+                //add the volume, net weight, gross weight, amount
+                ShipmentMgtBuffer.Volume := PurchaseLine."Outstanding Quantity" * PurchaseLine."Unit Volume";
+                ShipmentMgtBuffer."Net Weight" := PurchaseLine."Outstanding Quantity" * PurchaseLine."Net Weight";
+                ShipmentMgtBuffer."Gross Weight" := PurchaseLine."Outstanding Quantity" * PurchaseLine."Gross Weight";
+                ShipmentMgtBuffer."Amount (LCY)" := PurchaseLine."Outstanding Amount (LCY)";
+
+                // TM MD 08/11/17 i218 START
+                IF WhseShptLineExists THEN BEGIN
+                  WhseShptLine.CALCFIELDS("Pick Qty. (Base)");
+                  ShipmentMgtBuffer."Shipment No." := WhseShptLine."No.";
+                  ShipmentMgtBuffer."Qty. to Ship (Base)" := WhseShptLine."Qty. to Ship (Base)";
+                  ShipmentMgtBuffer."Pick Quantity (Base)" := WhseShptLine."Pick Qty. (Base)";
+                  ShipmentMgtBuffer."Qty. Picked (Base)" := WhseShptLine."Qty. Picked (Base)";
+                END;
+                // TM MD 08/11/17 i218 END
+                ShipmentMgtBuffer."Delivery Area Code" := STRSUBSTNO('%1/%2',ShipmentMgtBuffer."Document No.",ShipmentMgtBuffer."Document Line No.");
+                ShipmentMgtBuffer."Line Style" := ShipmentMgtBuffer.SetLineStyle;
+                ShipmentMgtBuffer.MODIFY;
+              END;
+            END;  // TM MD i218 15/11/17
+          END;
+        UNTIL ShipmentManagementEntry.NEXT = 0;
+
+      ShipmentMgtBuffer.GET(ShipmentMgtBuffer2."Entry No.");
+    END;
+
+    LOCAL PROCEDURE AddDropNoToShipmentMgtBuffer@52102444(VAR ShipmentMgtBuffer@52102435 : TEMPORARY Record 52102442;SourceType@52102439 : Integer);
+    VAR
+      ShipmentMgtBuffer2@52102437 : TEMPORARY Record 52102442;
+      ShipmentMgtBufferCheck@52102441 : TEMPORARY Record 52102442;
+      SalesHeader@52102438 : Record 36;
+      PurchaseHeader@52102440 : Record 38;
+      TransferHeader@50000 : Record 5740;
+      Customer@52102436 : Record 18;
+      Vendor@52102442 : Record 23;
+      Location@50001 : Record 14;
+      DestinationNo@52102443 : Code[20];
+      ShipToCode@52102444 : Code[10];
+      ShptMgtPostCode@52102445 : Code[20];
+    BEGIN
+      ShipmentMgtBuffer2 := ShipmentMgtBuffer;
+      ShipmentMgtBufferCheck.COPY(ShipmentMgtBuffer,TRUE);
+      CASE SourceType OF
+        DATABASE::"Sales Header":
+          BEGIN
+            SalesHeader.GET(ShipmentMgtBuffer2."Document Type",ShipmentMgtBuffer2."Document No.");
+            DestinationNo := SalesHeader."Sell-to Customer No.";
+            ShipToCode := SalesHeader."Ship-to Code";
+            ShptMgtPostCode := SalesHeader."Shipment Mgt. Post Code";
+          END;
+        DATABASE::"Purchase Header":
+          BEGIN
+            PurchaseHeader.GET(ShipmentMgtBuffer2."Document Type",ShipmentMgtBuffer2."Document No.");
+            DestinationNo := PurchaseHeader."Buy-from Vendor No.";
+            ShipToCode := PurchaseHeader."Ship-to Code";
+            ShptMgtPostCode := PurchaseHeader."Shipment Mgt. Post Code";
+          END;
+        DATABASE::"Transfer Header":
+          BEGIN
+            TransferHeader.GET(ShipmentMgtBuffer2."Document No.");
+            DestinationNo := TransferHeader."Transfer-to Code";
+            ShipToCode := '';
+            ShptMgtPostCode := TransferHeader."Shipment Mgt. Post Code";
+          END;
+      END;
+
+      ShipmentMgtBufferCheck.SETRANGE("Shipment Mgt. Group No.",ShipmentMgtBuffer2."Shipment Mgt. Group No.");
+      ShipmentMgtBufferCheck.SETRANGE("Destination No.",DestinationNo);
+      ShipmentMgtBufferCheck.SETRANGE("Ship-to Code",ShipToCode);
+      ShipmentMgtBufferCheck.SETRANGE("Post Code",ShptMgtPostCode);
+      ShipmentMgtBufferCheck.SETRANGE(Indentation,1);
+      IF NOT ShipmentMgtBufferCheck.FINDFIRST THEN BEGIN
+        ShipmentMgtBuffer.INIT;
+        ShipmentMgtBuffer."Shipment Mgt. Group No." := ShipmentMgtBuffer2."Shipment Mgt. Group No.";
+        ShipmentMgtBuffer.Indentation := 1;
+        ShipmentMgtBuffer."Destination No." := DestinationNo;
+        //TM LV I374 04/01/18 START
+      //  IF (SourceType = DATABASE::"Sales Header") AND (Customer.GET(ShipmentMgtBuffer."Destination No.")) THEN BEGIN
+      //    ShipmentMgtBuffer."Destination Type" := ShipmentMgtBuffer."Destination Type"::Customer;
+      //    ShipmentMgtBuffer."Destination Name" := Customer.Name;
+      //  END;
+        IF SourceType = DATABASE::"Sales Header" THEN BEGIN
+          ShipmentMgtBuffer."Destination Type" := ShipmentMgtBuffer."Destination Type"::Customer;
+          ShipmentMgtBuffer."Destination Name" := SalesHeader."Ship-to Name";
+        END;
+        //TM LV I374 04/01/18 END
+
+        IF (SourceType = DATABASE::"Purchase Header") AND (Vendor.GET(ShipmentMgtBuffer."Destination No.")) THEN BEGIN
+          ShipmentMgtBuffer."Destination Type" := ShipmentMgtBuffer."Destination Type"::Vendor;
+          ShipmentMgtBuffer."Destination Name" := Vendor.Name;
+        END;
+
+        IF (SourceType = DATABASE::"Transfer Header") AND (Location.GET(ShipmentMgtBuffer."Destination No.")) THEN BEGIN
+          ShipmentMgtBuffer."Destination Type" := ShipmentMgtBuffer."Destination Type"::Location;
+          ShipmentMgtBuffer."Destination Name" := Location.Name;
+        END;
+
+        ShipmentMgtBuffer."Ship-to Code" := ShipToCode;
+        ShipmentMgtBuffer."Post Code" := ShptMgtPostCode;
+        ShipmentMgtBuffer."Delivery Order" := ShipmentMgtBuffer2."Delivery Order";
+        ShipmentMgtBuffer."Delivery Area Code" := STRSUBSTNO('%1/%2',ShipmentMgtBuffer."Destination No.",ShipmentMgtBuffer."Post Code");
+        ShipmentMgtBuffer."Line Style" := ShipmentMgtBuffer.SetLineStyle;
+        BSShipmentMgt.BeforeAddDropNoToShipmentMgtBuffer(ShipmentMgtBuffer); // TM VZ CR14 25/10/17
+        ShipmentMgtBuffer.AddNewEntry;
+      END;
+
+      ShipmentMgtBuffer.GET(ShipmentMgtBuffer2."Entry No.");
+    END;
+
+    PROCEDURE MoveDeliveryOrderDown@52102437(VAR ShipmentManagementBuffer@52102435 : Record 52102442);
+    BEGIN
+      MoveDeliveryOrderUpDown(ShipmentManagementBuffer,1);
+    END;
+
+    PROCEDURE MoveDeliveryOrderUp@52102439(VAR ShipmentManagementBuffer@52102435 : Record 52102442);
+    BEGIN
+      MoveDeliveryOrderUpDown(ShipmentManagementBuffer,0);
+    END;
+
+    LOCAL PROCEDURE MoveDeliveryOrderUpDown@52102443(VAR ShipmentManagementBuffer@52102435 : Record 52102442;Direction@52102439 : 'Up,Down');
+    VAR
+      ShipmentManagementBufferCheck@52102436 : TEMPORARY Record 52102442;
+      ShipmentManagementBuffer1@52102437 : TEMPORARY Record 52102442;
+      ShipmentManagementBuffer2@52102438 : TEMPORARY Record 52102442;
+      ShipmentManagementEntry@52102444 : Record 52102443;
+      EntryNo@52102441 : Integer;
+      DeliveryOrder1@52102440 : Integer;
+      DeliveryOrder2@52102442 : Integer;
+      RecordFound@52102443 : Boolean;
+    BEGIN
+      IF ShipmentManagementBuffer.Indentation = 0 THEN
+        EXIT;
+
+      EntryNo := ShipmentManagementBuffer."Entry No.";
+
+      IF ShipmentManagementBuffer.Indentation >= 2 THEN
+        IF NOT FindShipMgtGroupDropLine(ShipmentManagementBuffer) THEN
+          EXIT;
+
+      ShipmentManagementBufferCheck.COPY(ShipmentManagementBuffer,TRUE);
+      ShipmentManagementBufferCheck.SETCURRENTKEY("Shipment Mgt. Group No.","Delivery Order");
+      ShipmentManagementBufferCheck.SETRANGE("Shipment Mgt. Group No.",ShipmentManagementBuffer."Shipment Mgt. Group No.");
+      ShipmentManagementBufferCheck.SETRANGE(Indentation,2);
+      CASE Direction OF
+        Direction::Up:
+          BEGIN
+            ShipmentManagementBufferCheck.SETFILTER("Delivery Order",'<%1',ShipmentManagementBuffer."Delivery Order");
+            RecordFound := ShipmentManagementBufferCheck.FINDLAST;
+          END;
+        Direction::Down:
+          BEGIN
+            ShipmentManagementBufferCheck.SETFILTER("Delivery Order",'>%1',ShipmentManagementBuffer."Delivery Order");
+            RecordFound := ShipmentManagementBufferCheck.FINDFIRST;
+          END;
+      END;
+
+      IF RecordFound THEN BEGIN
+        DeliveryOrder1 := ShipmentManagementBuffer."Delivery Order";
+        DeliveryOrder2 := ShipmentManagementBufferCheck."Delivery Order";
+
+        CopyShipmentMgtEntriesToBuffer(ShipmentManagementBuffer,ShipmentManagementBuffer1,ShipmentManagementBuffer."Shipment Mgt. Group No.",DeliveryOrder1);
+        CopyShipmentMgtEntriesToBuffer(ShipmentManagementBuffer,ShipmentManagementBuffer2,ShipmentManagementBuffer."Shipment Mgt. Group No.",DeliveryOrder2);
+
+        UpdateShipMgtEntryWithNewDeliveryOrder(ShipmentManagementBuffer,ShipmentManagementBuffer1,DeliveryOrder2);
+        UpdateShipMgtEntryWithNewDeliveryOrder(ShipmentManagementBuffer,ShipmentManagementBuffer2,DeliveryOrder1);
+      END;
+
+      ShipmentManagementEntry.SETRANGE("Shipment Mgt. Group No.",ShipmentManagementBuffer.Indentation);
+      ShipmentManagementEntry.SETRANGE("Delivery Order",DeliveryOrder2);
+      IF ShipmentManagementEntry.FINDFIRST THEN
+        ShipmentManagementEntry.SetOutOfDeliveryAreaLineDeliveryOrder;
+
+      ShipmentManagementBuffer.GET(EntryNo);
+    END;
+
+    LOCAL PROCEDURE FindShipMgtGroupDropLine@52102445(VAR ShipmentManagementBuffer@52102435 : Record 52102442) : Boolean;
+    BEGIN
+      REPEAT
+        IF ShipmentManagementBuffer.Indentation = 1 THEN
+          EXIT(TRUE);
+      UNTIL ShipmentManagementBuffer.NEXT(-1) = 0;
+      EXIT(FALSE);
+    END;
+
+    LOCAL PROCEDURE CopyShipmentMgtEntriesToBuffer@52102446(VAR ShipmentManagementBuffer@52102435 : Record 52102442;VAR ShipmentManagementBufferTarget@52102439 : Record 52102442;ShipMgtGroupNo@52102436 : Integer;DeliveryOrder@52102437 : Integer);
+    VAR
+      ShipmentManagementBufferCopy@52102438 : TEMPORARY Record 52102442;
+    BEGIN
+      ShipmentManagementBufferCopy.COPY(ShipmentManagementBuffer,TRUE);
+      ShipmentManagementBufferCopy.SETCURRENTKEY("Shipment Mgt. Group No.","Delivery Order");
+      ShipmentManagementBufferCopy.SETRANGE("Shipment Mgt. Group No.",ShipMgtGroupNo);
+      ShipmentManagementBufferCopy.SETRANGE("Delivery Order",DeliveryOrder);
+      IF ShipmentManagementBufferCopy.FINDSET THEN
+        REPEAT
+          ShipmentManagementBufferTarget := ShipmentManagementBufferCopy;
+          ShipmentManagementBufferTarget.INSERT;
+        UNTIL ShipmentManagementBufferCopy.NEXT = 0;
+    END;
+
+    LOCAL PROCEDURE UpdateShipMgtEntryWithNewDeliveryOrder@52102447(VAR ShipmentManagementBuffer@52102437 : Record 52102442;VAR ShipmentManagementBufferTarget@52102435 : Record 52102442;NewDeliveryOrder@52102436 : Integer);
+    VAR
+      ShipmentManagementEntry@52102438 : Record 52102443;
+    BEGIN
+      IF ShipmentManagementBufferTarget.FINDSET THEN
+        REPEAT
+          ShipmentManagementBuffer.GET(ShipmentManagementBufferTarget."Entry No.");
+          ShipmentManagementBuffer."Delivery Order" := NewDeliveryOrder;
+          ShipmentManagementBuffer.MODIFY;
+
+          IF ShipmentManagementBufferTarget."Document No." <> '' THEN BEGIN
+            ShipmentManagementEntry.GET(
+              ShipmentManagementBufferTarget."Shipment Mgt. Group No.",
+              ShipmentManagementBufferTarget."Source Type",
+              ShipmentManagementBufferTarget."Document Type",
+              ShipmentManagementBufferTarget."Document No.",
+              ShipmentManagementBufferTarget."Document Line No.");
+            ShipmentManagementEntry."Delivery Order" := NewDeliveryOrder;
+            ShipmentManagementEntry.MODIFY;
+          END;
+        UNTIL ShipmentManagementBufferTarget.NEXT = 0;
+    END;
+
+    PROCEDURE CreateWarehouseShipments@52102440(VAR ShipmentManagementBuffer@52102435 : Record 52102442);
+    VAR
+      ShipMgtBuffTemp@52102437 : TEMPORARY Record 52102442;
+      SalesHeader@50000 : Record 36;
+      TransferHeader@52102436 : Record 5740;
+      NoOfWhseShipmentCreated@52102438 : Integer;
+      RecRef@50001 : RecordRef;
+    BEGIN
+      PrepareShipmentMgtBuffer(ShipmentManagementBuffer,ShipMgtBuffTemp);
+      IF ShipMgtBuffTemp.FINDSET THEN
+        REPEAT
+          CASE ShipMgtBuffTemp."Source Type" OF
+            DATABASE::"Sales Header",DATABASE::"Sales Line":
+              BEGIN
+                SalesHeader.GET(ShipMgtBuffTemp."Document Type",ShipMgtBuffTemp."Document No.");
+                RecRef.GETTABLE(SalesHeader);
+              END;
+            DATABASE::"Transfer Header",DATABASE::"Transfer Line":
+              BEGIN
+                TransferHeader.GET(ShipMgtBuffTemp."Document No.");
+                RecRef.GETTABLE(TransferHeader);
+              END;
+          END;
+          NoOfWhseShipmentCreated += CreateFromOrderHideDialog(RecRef,ShipMgtBuffTemp."Shipment Mgt. Group No.",ShipMgtBuffTemp);
+        UNTIL ShipMgtBuffTemp.NEXT = 0;
+
+      RefreshShipmentManagementBuffer(ShipmentManagementBuffer);
+
+      ShowResult(NoOfWhseShipmentCreated);
+    END;
+
+    PROCEDURE CreateConsolidatedWhseShipment@52102457(VAR ShipmentManagementBuffer@52102435 : Record 52102442;LocationCode@52102437 : Code[10]);
+    VAR
+      ShipMgtBuffTemp@52102436 : TEMPORARY Record 52102442;
+      WarehouseShipmentHeader@52102438 : Record 7320;
+      WarehouseRequest@52102440 : Record 5765;
+      GetSourceDocuments@52102439 : Report 5753;
+      SalesHeader@52102441 : Record 36;
+      TransferHeader@50000 : Record 5740;
+    BEGIN
+      PrepareShipmentMgtBuffer(ShipmentManagementBuffer,ShipMgtBuffTemp);
+      CreateWhseShptHeader(WarehouseShipmentHeader,LocationCode);
+      PopulateShptMgtFields(WarehouseShipmentHeader,ShipmentManagementBuffer."Shipment Mgt. Group No.");
+      ShipMgtBuffTemp.SETCURRENTKEY("Source Type","Document Type","Document No.");
+      ShipMgtBuffTemp.SETFILTER("Source Type",'%1|%2|%3|%4',DATABASE::"Sales Header",DATABASE::"Sales Line",DATABASE::"Transfer Header",DATABASE::"Transfer Line");
+      IF ShipMgtBuffTemp.FINDSET THEN BEGIN
+        REPEAT
+          ShipMgtBuffTemp.SETRANGE("Source Type",ShipMgtBuffTemp."Source Type");
+          ShipMgtBuffTemp.SETRANGE("Document Type",ShipMgtBuffTemp."Document Type");
+          ShipMgtBuffTemp.SETRANGE("Document No.",ShipMgtBuffTemp."Document No.");
+
+          CLEAR(GetSourceDocuments);
+          GetSourceDocuments.SetOneCreatedShptHeader(WarehouseShipmentHeader);
+          GetSourceDocuments.SetSkipBlocked(TRUE);
+          GetSourceDocuments.SetSkipBlockedItem(TRUE);
+          GetSourceDocuments.SetShipmentMgtGroupNo(ShipMgtBuffTemp."Shipment Mgt. Group No.");
+          GetSourceDocuments.SetShptMgtBuffer(ShipMgtBuffTemp);
+
+          CASE ShipMgtBuffTemp."Source Type" OF
+            DATABASE::"Sales Header",DATABASE::"Sales Line":
+              BEGIN
+                SalesHeader.GET(ShipMgtBuffTemp."Document Type",ShipMgtBuffTemp."Document No.");
+                FindWarehouseRequestForSalesOrder(WarehouseRequest,SalesHeader);
+              END;
+            DATABASE::"Transfer Header",DATABASE::"Transfer Line":
+              BEGIN
+                TransferHeader.GET(ShipMgtBuffTemp."Document No.");
+                FindWarehouseRequestForTransferOrder(WarehouseRequest,TransferHeader);
+              END;
+          END;
+
+          GetSourceDocuments.SETTABLEVIEW(WarehouseRequest);
+          GetSourceDocuments.USEREQUESTPAGE(FALSE);
+          GetSourceDocuments.SetHideDialog(TRUE);
+          GetSourceDocuments.RUNMODAL;
+
+          ShipMgtBuffTemp.FINDLAST;
+          ShipMgtBuffTemp.SETRANGE("Source Type");
+          ShipMgtBuffTemp.SETRANGE("Document Type");
+          ShipMgtBuffTemp.SETRANGE("Document No.");
+        UNTIL ShipMgtBuffTemp.NEXT = 0;
+      END
+      ELSE
+        ERROR(NothingToCreateErr);
+    END;
+
+    LOCAL PROCEDURE CreateWhseShptHeader@52102459(VAR WarehouseShipmentHeader@52102435 : Record 7320;LocationCode@52102436 : Code[10]);
+    VAR
+      Location@52102437 : Record 14;
+    BEGIN
+      WarehouseShipmentHeader.INIT;
+      WarehouseShipmentHeader.VALIDATE("Location Code",LocationCode);
+      Location.GET(LocationCode);
+      WarehouseShipmentHeader."Bin Code" := Location.Code;
+      WarehouseShipmentHeader.INSERT(TRUE);
+    END;
+
+    PROCEDURE CreatePick@52102449(VAR ShipmentManagementBuffer@52102435 : Record 52102442;LocationCode@52102443 : Code[10]);
+    VAR
+      ShipMgtBuffTemp@52102436 : TEMPORARY Record 52102442;
+      SalesHeader@52102437 : Record 36;
+      PurchaseHeader@50002 : Record 38;
+      TransferHeader@50001 : Record 5740;
+      Location@52102438 : Record 14;
+      WhseShptLine@52102440 : Record 7321;
+      WhseShptHeader@52102442 : Record 7320;
+      ReleaseWhseShipment@52102441 : Codeunit 7310;
+      DocumentHandled@52102439 : Boolean;
+      Handled@52102444 : Boolean;
+      RecRef@50000 : RecordRef;
+    BEGIN
+      IF NOT Location.RequirePicking(LocationCode) THEN
+        ERROR(LocationDoesNotRequirePicksErr,LocationCode);
+
+      PrepareShipmentMgtBuffer(ShipmentManagementBuffer,ShipMgtBuffTemp);
+      MarkDocumentHeaderAndWhseShptHeaderFromShipmentMgtBuffer(ShipMgtBuffTemp,SalesHeader,WhseShptHeader,TransferHeader,PurchaseHeader);
+
+      IF SalesHeader.FINDSET(TRUE,FALSE) THEN
+        REPEAT
+          IF NOT Location.RequireShipment(SalesHeader."Location Code") THEN BEGIN
+            IF SalesHeader.Status <> SalesHeader.Status::Released THEN
+              CODEUNIT.RUN(CODEUNIT::"Release Sales Document",SalesHeader);
+            RecRef.GETTABLE(SalesHeader);
+            DocumentHandled := CreateInvtPutAwayPick(RecRef,LocationCode);
+            IF NOT Handled THEN
+              Handled := DocumentHandled;
+          END
+        UNTIL SalesHeader.NEXT = 0;
+
+      // TM MD 08/11/17 i218 START
+      IF PurchaseHeader.FINDSET(TRUE,FALSE) THEN
+        REPEAT
+          IF NOT Location.RequireShipment(PurchaseHeader."Location Code") THEN BEGIN
+            IF PurchaseHeader.Status <> PurchaseHeader.Status::Released THEN
+              CODEUNIT.RUN(CODEUNIT::"Release Purchase Document",PurchaseHeader);
+            RecRef.GETTABLE(PurchaseHeader);
+            DocumentHandled := CreateInvtPutAwayPick(RecRef,LocationCode);
+            IF NOT Handled THEN
+              Handled := DocumentHandled;
+          END
+        UNTIL PurchaseHeader.NEXT = 0;
+      // TM MD 08/11/17 i218 END
+
+      IF TransferHeader.FINDSET(TRUE,FALSE) THEN
+        REPEAT
+          IF NOT Location.RequireShipment(TransferHeader."Transfer-from Code") THEN BEGIN
+            IF TransferHeader.Status <> TransferHeader.Status::Released THEN
+              CODEUNIT.RUN(CODEUNIT::"Release Transfer Document",TransferHeader);
+            RecRef.GETTABLE(TransferHeader);
+            DocumentHandled := CreateInvtPutAwayPick(RecRef,LocationCode);
+            IF NOT Handled THEN
+              Handled := DocumentHandled;
+          END
+        UNTIL TransferHeader.NEXT = 0;
+
+      IF WhseShptHeader.FINDSET(TRUE,FALSE) THEN
+        REPEAT
+          IF WhseShptHeader.Status = WhseShptHeader.Status::Open THEN
+              ReleaseWhseShipment.Release(WhseShptHeader);
+          DocumentHandled := CreateWhseShptPick(WhseShptHeader);
+          IF NOT Handled THEN
+            Handled := DocumentHandled;
+        UNTIL WhseShptHeader.NEXT = 0;
+      IF NOT Handled THEN
+        ERROR(NothingToCreateErr);
+      RefreshShipmentManagementBuffer(ShipmentManagementBuffer);
+    END;
+
+    PROCEDURE RegisterPick@52102450(VAR ShipmentManagementBuffer@52102436 : Record 52102442;LocationCode@52102435 : Code[10]);
+    VAR
+      ShipMgtBuffTemp@52102442 : TEMPORARY Record 52102442;
+      SalesHeader@52102441 : Record 36;
+      PurchaseHeader@50001 : Record 38;
+      TransferHeader@50000 : Record 5740;
+      Location@52102440 : Record 14;
+      WhseShptLine@52102439 : Record 7321;
+      WhseShptHeader@52102438 : Record 7320;
+      WhseActivLine@52102443 : Record 5767;
+      WhseActivityPost@52102445 : Codeunit 7324;
+      WhseActivityRegister@52102437 : Codeunit 7307;
+      Handled@52102444 : Boolean;
+    BEGIN
+      IF NOT Location.RequirePicking(LocationCode) THEN
+        ERROR(LocationDoesNotRequirePicksErr,LocationCode);
+      GetShipMgtSetup;
+      PrepareShipmentMgtBuffer(ShipmentManagementBuffer,ShipMgtBuffTemp);
+      MarkDocumentHeaderAndWhseShptHeaderFromShipmentMgtBuffer(ShipMgtBuffTemp,SalesHeader,WhseShptHeader,TransferHeader,PurchaseHeader);
+
+      IF SalesHeader.FINDSET(TRUE,FALSE) THEN
+        REPEAT
+          IF NOT Location.RequireShipment(SalesHeader."Location Code") THEN BEGIN
+            WhseActivLine.RESET;
+            WhseActivLine.SETRANGE("Activity Type",WhseActivLine."Activity Type"::"Invt. Pick");
+            WhseActivLine.SETRANGE("Source Document",WhseActivLine."Source Document"::"Sales Order");
+            WhseActivLine.SETRANGE("Source No.",SalesHeader."No.");
+            WhseActivLine.SETRANGE("Location Code",LocationCode);
+            WhseActivLine.SETFILTER("Qty. to Handle",'<>%1',0);
+            IF WhseActivLine.FINDFIRST THEN BEGIN
+              IF ShipMgtSetup."Invt. Pick Post Setting" = ShipMgtSetup."Invt. Pick Post Setting"::"Ship & Invoice" THEN
+                WhseActivityPost.SetInvoiceSourceDoc(TRUE);
+              WhseActivityPost.ShowHideDialog(TRUE);
+              WhseActivityPost.RUN(WhseActivLine);
+              CLEAR(WhseActivityPost);
+              Handled := TRUE;
+            END;
+          END;
+        UNTIL SalesHeader.NEXT = 0;
+
+      // TM MD 08/11/17 i218 START
+      IF PurchaseHeader.FINDSET(TRUE,FALSE) THEN
+        REPEAT
+          IF NOT Location.RequireShipment(PurchaseHeader."Location Code") THEN BEGIN
+            WhseActivLine.RESET;
+            WhseActivLine.SETRANGE("Activity Type",WhseActivLine."Activity Type"::"Invt. Pick");
+            WhseActivLine.SETRANGE("Source Document",WhseActivLine."Source Document"::"Purchase Order");
+            WhseActivLine.SETRANGE("Source No.",PurchaseHeader."No.");
+            WhseActivLine.SETRANGE("Location Code",LocationCode);
+            WhseActivLine.SETFILTER("Qty. to Handle",'<>%1',0);
+            IF WhseActivLine.FINDFIRST THEN BEGIN
+              IF ShipMgtSetup."Invt. Pick Post Setting" = ShipMgtSetup."Invt. Pick Post Setting"::"Ship & Invoice" THEN
+                WhseActivityPost.SetInvoiceSourceDoc(TRUE);
+              WhseActivityPost.ShowHideDialog(TRUE);
+              WhseActivityPost.RUN(WhseActivLine);
+              CLEAR(WhseActivityPost);
+              Handled := TRUE;
+            END;
+          END;
+        UNTIL PurchaseHeader.NEXT = 0;
+      // TM MD 08/11/17 i218 END
+
+      IF TransferHeader.FINDSET(TRUE,FALSE) THEN
+        REPEAT
+          IF NOT Location.RequireShipment(TransferHeader."Transfer-from Code") THEN BEGIN
+            WhseActivLine.RESET;
+            WhseActivLine.SETRANGE("Activity Type",WhseActivLine."Activity Type"::"Invt. Pick");
+            WhseActivLine.SETRANGE("Source Document",WhseActivLine."Source Document"::"Outbound Transfer");
+            WhseActivLine.SETRANGE("Source No.",TransferHeader."No.");
+            WhseActivLine.SETRANGE("Location Code",LocationCode);
+            WhseActivLine.SETFILTER("Qty. to Handle",'<>%1',0);
+            IF WhseActivLine.FINDFIRST THEN BEGIN
+              IF ShipMgtSetup."Invt. Pick Post Setting" = ShipMgtSetup."Invt. Pick Post Setting"::"Ship & Invoice" THEN
+                WhseActivityPost.SetInvoiceSourceDoc(TRUE);
+              WhseActivityPost.ShowHideDialog(TRUE);
+              WhseActivityPost.RUN(WhseActivLine);
+              CLEAR(WhseActivityPost);
+              Handled := TRUE;
+            END;
+          END;
+        UNTIL TransferHeader.NEXT = 0;
+
+      IF WhseShptHeader.FINDSET(TRUE,FALSE) THEN
+        REPEAT
+          WhseActivLine.RESET;
+          WhseActivLine.SETRANGE("Activity Type",WhseActivLine."Activity Type"::Pick);
+          WhseActivLine.SETRANGE("Whse. Document Type",WhseActivLine."Whse. Document Type"::Shipment);
+          WhseActivLine.SETRANGE("Whse. Document No.",WhseShptHeader."No.");
+          WhseActivLine.SETFILTER("Qty. to Handle (Base)",'<>%1',0);
+          IF WhseActivLine.FINDFIRST THEN BEGIN
+            WhseActivityRegister.ShowHideDialog(TRUE);
+            WhseActivityRegister.RUN(WhseActivLine);
+            CLEAR(WhseActivityRegister);
+            Handled := TRUE
+          END;
+        UNTIL WhseShptHeader.NEXT = 0;
+      IF NOT Handled THEN
+        ERROR(NothingToHandleErr);
+      RefreshShipmentManagementBuffer(ShipmentManagementBuffer);
+    END;
+
+    PROCEDURE PostWarehouseShipments@52102453(VAR ShipmentManagementBuffer@52102439 : Record 52102442);
+    VAR
+      ShipMgtBuffTemp@52102442 : TEMPORARY Record 52102442;
+      SalesHeader@52102441 : Record 36;
+      PurchaseHeader@50003 : Record 38;
+      TransferHeader@50000 : Record 5740;
+      WhseShptHeader@52102436 : Record 7320;
+      WhseShptLine@52102437 : Record 7321;
+      WhsePostShipment@52102435 : Codeunit 5763;
+      Handled@52102438 : Boolean;
+      TempWarehouseShipmentHeader@50001 : TEMPORARY Record 7320;
+      ManifestPrinted@50002 : Boolean;
+    BEGIN
+      GetShipMgtSetup;
+      PrepareShipmentMgtBuffer(ShipmentManagementBuffer,ShipMgtBuffTemp);
+
+      //TCS AZURE 1164 XPO
+
+      //IF ShipmentManagementBuffer."Location Code" = 'A58' THEN
+        //BEGIN
+          // IF (ShipmentManagementBuffer."Req. Delivery Exported to XPO" = FALSE) THEN
+           //  BEGIN
+          //     ERROR(Error1);
+           //  END;
+        //END;
+
+
+
+
+      //MarkDocumentHeaderAndWhseShptHeaderFromShipmentMgtBuffer(ShipMgtBuffTemp,SalesHeader,WhseShptHeader,TransferHeader,PurchaseHeader);  // rem TM MD GAP017 13/11/17
+      // TM MD GAP017 13/11/17 START
+      CheckOnlyOneGroupIsSelected(ShipMgtBuffTemp);
+      AddAllGroupLinesToBuff(ShipmentManagementBuffer,ShipMgtBuffTemp);
+      RemoveLinesThatShouldNotBePostedFromBuff(ShipMgtBuffTemp);
+      ConfirmPosting(ShipMgtBuffTemp);
+      CheckLinesAreReadyForPosting(ShipMgtBuffTemp);
+      CheckDocumentsAreReadyForPosting(ShipMgtBuffTemp);  // TM MD i302 08/12/17
+      CheckLoadNoIsSet(ShipMgtBuffTemp);
+      CheckReportsAreSet;
+      CheckForPartShipment(ShipMgtBuffTemp); //TM LV i534 25/01/18
+      CreateWhseShptHeadersToPost(ShipMgtBuffTemp,ShipmentManagementBuffer,WhseShptHeader);
+      // TM MD GAP017 13/11/17 END
+
+      IF WhseShptHeader.FINDSET THEN
+        REPEAT
+          // TM MD i508 18/01/18 START
+          IF WhseShptHeader."Posting Date" <> WORKDATE THEN BEGIN
+            WhseShptHeader.VALIDATE("Posting Date",WORKDATE);
+            WhseShptHeader.MODIFY(TRUE);
+          END;
+          // TM MD i508 18/01/18 END
+          WhseShptLine.SETRANGE("No.",WhseShptHeader."No.");
+          WhseShptLine.SETFILTER("Qty. to Ship",'>0');
+          IF WhseShptLine.FINDFIRST THEN BEGIN
+            IF ShipMgtSetup."Whse. Shipment Post Setting" = ShipMgtSetup."Whse. Shipment Post Setting"::"Ship & Invoice" THEN
+              WhsePostShipment.SetPostingSettings(TRUE);
+            TempWarehouseShipmentHeader.TRANSFERFIELDS(WhseShptHeader); //TM DTH BS.GAP015 19/10/17 -
+            IF TempWarehouseShipmentHeader.INSERT(FALSE) THEN; //TM DTH BS.GAP015 19/10/17 +
+            WhsePostShipment.RUN(WhseShptLine);
+            CLEAR(WhsePostShipment);
+            Handled := TRUE;
+          END;
+        UNTIL WhseShptHeader.NEXT = 0;
+      IF NOT Handled THEN
+        ERROR(NothingToPostErr);
+      UpdateShptMgtGroupNosOnRelatedDocuments(ShipmentManagementBuffer."Shipment Mgt. Group No.");  // TM MD i420 23/01/18
+      RefreshShipmentManagementBuffer(ShipmentManagementBuffer);
+      COMMIT;  // TM MD i420 23/01/18
+
+      //TM DTH BS.GAP015 19/10/17 -
+      IF TempWarehouseShipmentHeader.FINDSET THEN
+        REPEAT
+          UpdatePostedOnShptGroup(TempWarehouseShipmentHeader."Shipment Mgt. Group No.");
+          IF NOT ManifestPrinted THEN BEGIN
+            PrintManifest(TempWarehouseShipmentHeader);
+            ManifestPrinted := TRUE;
+          END;
+          PrintCustomDeclaration(TempWarehouseShipmentHeader);// TCS KR Brexit 1409
+          PrintPackingList(TempWarehouseShipmentHeader);
+        UNTIL TempWarehouseShipmentHeader.NEXT = 0;
+      //TM DTH BS.GAP015 19/10/17 +
+    END;
+
+    LOCAL PROCEDURE PrepareShipmentMgtBuffer@52102441(VAR ShipmentManagementBuffer@52102435 : Record 52102442;VAR ShipMgtBuffTemp@52102436 : TEMPORARY Record 52102442);
+    VAR
+      ShipmentManagementBuffer2@52102437 : TEMPORARY Record 52102442;
+    BEGIN
+      ShipmentManagementBuffer2.COPY(ShipmentManagementBuffer,TRUE);
+      ShipmentManagementBuffer2.RESET;
+
+      IF ShipmentManagementBuffer.FINDSET THEN
+        REPEAT
+          IF (ShipmentManagementBuffer.Indentation < 2) AND (ShipmentManagementBuffer."Document No." = '') THEN BEGIN
+            ShipmentManagementBuffer2.SETRANGE("Shipment Mgt. Group No.",ShipmentManagementBuffer."Shipment Mgt. Group No.");
+            ShipmentManagementBuffer2.SETRANGE(Indentation,2);
+            IF ShipmentManagementBuffer2.FINDSET THEN
+              REPEAT
+               ShipMgtBuffTemp := ShipmentManagementBuffer2;
+               IF ShipMgtBuffTemp.INSERT THEN;
+              UNTIL ShipmentManagementBuffer2.NEXT = 0;
+           END ELSE BEGIN
+             ShipMgtBuffTemp := ShipmentManagementBuffer;
+             IF ShipMgtBuffTemp.INSERT THEN;
+           END;
+        UNTIL ShipmentManagementBuffer.NEXT = 0;
+    END;
+
+    PROCEDURE CreateFromOrderHideDialog@15(RecRef@52102436 : RecordRef;ShipMgtGroupNo@52102437 : Integer;VAR TempShipmentMgtBuffer@52102435 : TEMPORARY Record 52102442) : Integer;
+    VAR
+      SalesHeader@50000 : Record 36;
+      TransferHeader@50001 : Record 5740;
+      WhseRqst@1001 : Record 5765;
+    BEGIN
+      CASE RecRef.NUMBER OF
+        DATABASE::"Sales Header":
+          BEGIN
+            RecRef.SETTABLE(SalesHeader);
+            FindWarehouseRequestForSalesOrder(WhseRqst,SalesHeader);
+          END;
+        DATABASE::"Transfer Header":
+          BEGIN
+            RecRef.SETTABLE(TransferHeader);
+            FindWarehouseRequestForTransferOrder(WhseRqst,TransferHeader);
+          END;
+      END;
+
+      IF WhseRqst.ISEMPTY THEN
+        EXIT(0);
+
+      EXIT(CreateWhseShipmentHeaderFromWhseRequest(WhseRqst,ShipMgtGroupNo,TempShipmentMgtBuffer));
+    END;
+
+    LOCAL PROCEDURE CreateWhseShipmentHeaderFromWhseRequest@13(VAR WarehouseRequest@1000 : Record 5765;ShipMgtGroupNo@52102436 : Integer;VAR TempShipmentMgtBuffer@52102437 : TEMPORARY Record 52102442) : Integer;
+    VAR
+      GetSourceDocuments@52102435 : Report 5753;
+    BEGIN
+      IF WarehouseRequest.ISEMPTY THEN
+        EXIT(0);
+
+      CLEAR(GetSourceDocuments);
+      GetSourceDocuments.USEREQUESTPAGE(FALSE);
+      GetSourceDocuments.SETTABLEVIEW(WarehouseRequest);
+      GetSourceDocuments.SetHideDialog(TRUE);
+      GetSourceDocuments.SetShipmentMgtGroupNo(ShipMgtGroupNo);
+      GetSourceDocuments.SetShptMgtBuffer(TempShipmentMgtBuffer);
+      GetSourceDocuments.RUNMODAL;
+
+      EXIT(GetSourceDocuments.GetNoOfActivitiesCreated);
+    END;
+
+    LOCAL PROCEDURE FindWarehouseRequestForSalesOrder@17(VAR WhseRqst@1000 : Record 5765;SalesHeader@1001 : Record 36);
+    VAR
+      GetSourceDocOutbound@52102435 : Codeunit 5752;
+    BEGIN
+      WITH SalesHeader DO BEGIN
+        TESTFIELD(Status,Status::Released);
+        IF WhseShpmntConflict("Document Type","No.","Shipping Advice") THEN
+          ERROR(WarehouseShipmentWasnotCreatedMsg,FORMAT("Shipping Advice"));
+        GetSourceDocOutbound.CheckSalesHeader(SalesHeader,TRUE);
+        WhseRqst.SETRANGE(Type,WhseRqst.Type::Outbound);
+        WhseRqst.SETRANGE("Source Type",DATABASE::"Sales Line");
+        WhseRqst.SETRANGE("Source Subtype","Document Type");
+        WhseRqst.SETRANGE("Source No.","No.");
+        WhseRqst.SETRANGE("Document Status",WhseRqst."Document Status"::Released);
+        GetRequireShipRqst(WhseRqst);
+      END;
+    END;
+
+    LOCAL PROCEDURE FindWarehouseRequestForTransferOrder@50004(VAR WhseRqst@1000 : Record 5765;TransferHeader@1001 : Record 5740);
+    VAR
+      GetSourceDocOutbound@52102435 : Codeunit 5752;
+    BEGIN
+      WITH TransferHeader DO BEGIN
+        TESTFIELD(Status,Status::Released);
+        GetSourceDocOutbound.CheckTransferHeader(TransferHeader,TRUE);
+        WhseRqst.SETRANGE(Type,WhseRqst.Type::Outbound);
+        WhseRqst.SETRANGE("Source Type",DATABASE::"Transfer Line");
+        WhseRqst.SETRANGE("Source Subtype",0);
+        WhseRqst.SETRANGE("Source No.","No.");
+        WhseRqst.SETRANGE("Document Status",WhseRqst."Document Status"::Released);
+        GetRequireShipRqst(WhseRqst);
+      END;
+    END;
+
+    LOCAL PROCEDURE GetRequireShipRqst@11(VAR WhseRqst@1000 : Record 5765);
+    VAR
+      Location@1001 : Record 14;
+      LocationCode@1002 : Text;
+    BEGIN
+      IF WhseRqst.FINDSET THEN BEGIN
+        REPEAT
+          IF Location.RequireShipment(WhseRqst."Location Code") THEN
+            LocationCode += WhseRqst."Location Code" + '|';
+        UNTIL WhseRqst.NEXT = 0;
+        IF LocationCode <> '' THEN
+          LocationCode := COPYSTR(LocationCode,1,STRLEN(LocationCode) - 1);
+        WhseRqst.SETFILTER("Location Code",LocationCode);
+      END;
+    END;
+
+    LOCAL PROCEDURE CreateInvtPutAwayPick@52102479(RecRef@50002 : RecordRef;LocationCode@52102438 : Code[10]) : Boolean;
+    VAR
+      SalesHeader@50000 : Record 36;
+      TransferHeader@50001 : Record 5740;
+      WhseRequest@52102436 : Record 5765;
+      SalesLine@52102439 : Record 37;
+      CreateInvtPutawayPickMvmt@52102437 : Report 7323;
+      FoundLineToPick@52102440 : Boolean;
+    BEGIN
+      CASE RecRef.NUMBER OF
+        DATABASE::"Sales Header":
+          WITH SalesHeader DO BEGIN
+            RecRef.SETTABLE(SalesHeader);
+            TESTFIELD(Status,Status::Released);
+
+            WhseRequest.RESET;
+            WhseRequest.SETCURRENTKEY("Source Document","Source No.");
+            CASE "Document Type" OF
+              "Document Type"::Order:
+                BEGIN
+                  IF "Shipping Advice" = "Shipping Advice"::Complete THEN
+                    CheckShippingAdvice;
+                  WhseRequest.SETRANGE("Source Document",WhseRequest."Source Document"::"Sales Order");
+                END;
+              "Document Type"::"Return Order":
+                WhseRequest.SETRANGE("Source Document",WhseRequest."Source Document"::"Sales Return Order");
+            END;
+            WhseRequest.SETRANGE("Source No.","No.");
+            WhseRequest.SETRANGE("Location Code",LocationCode);
+            WhseRequest.SETRANGE(Type,WhseRequest.Type::Outbound);
+            IF NOT WhseRequest.FINDFIRST THEN
+              EXIT(FALSE);
+
+            SetFilterSalesLine(SalesLine,SalesHeader,LocationCode);
+            IF SalesLine.FINDSET THEN
+              REPEAT
+                FoundLineToPick := NOT InvtPickLineExistForSalesLine(SalesLine."Document Type",SalesLine."Document No.",SalesLine."Line No.");
+              UNTIL (SalesLine.NEXT = 0) OR FoundLineToPick;
+            IF NOT FoundLineToPick THEN
+              EXIT(FALSE);
+          END;
+        DATABASE::"Transfer Header":
+          WITH TransferHeader DO BEGIN
+            RecRef.SETTABLE(TransferHeader);
+            TESTFIELD(Status,Status::Released);
+            WhseRequest.RESET;
+            WhseRequest.SETCURRENTKEY("Source Document","Source No.");
+            WhseRequest.SETFILTER(
+              "Source Document",'%1|%2',
+              WhseRequest."Source Document"::"Inbound Transfer",
+              WhseRequest."Source Document"::"Outbound Transfer");
+            WhseRequest.SETRANGE("Source No.","No.");
+          END;
+      END;
+
+      CreateInvtPutawayPickMvmt.SETTABLEVIEW(WhseRequest);
+      CreateInvtPutawayPickMvmt.InitializeRequest(FALSE,TRUE,FALSE,FALSE,TRUE);
+      CreateInvtPutawayPickMvmt.SuppressMessages(TRUE);
+      CreateInvtPutawayPickMvmt.USEREQUESTPAGE(FALSE);
+      CreateInvtPutawayPickMvmt.RUNMODAL;
+      EXIT(TRUE);
+    END;
+
+    LOCAL PROCEDURE CreateWhseShptPick@52102455(VAR WhseShptHeader@52102435 : Record 7320) : Boolean;
+    VAR
+      WhseShptLine@52102437 : Record 7321;
+    BEGIN
+      WhseShptLine.SETRANGE("No.",WhseShptHeader."No.");
+      WhseShptLine.SETFILTER(Quantity,'>%1',0);
+      WhseShptLine.SETRANGE("Completely Picked",FALSE);
+      IF NOT WhseShptLine.FINDFIRST THEN
+        EXIT(FALSE);
+      WhseShptLine.SetHideValidationDialog(TRUE);
+      WhseShptLine.CreatePickDoc(WhseShptLine,WhseShptHeader);
+      CheckAndUpdatePickSortingOrder(WhseShptHeader);
+      EXIT(TRUE);
+    END;
+
+    LOCAL PROCEDURE CheckAndUpdatePickSortingOrder@52102462(VAR WhseShptHeader@52102435 : Record 7320);
+    VAR
+      WarehouseActivityHeader@52102439 : Record 5766;
+      WarehouseActivityLine@52102438 : Record 5767;
+      ShipmentManagementSetup@52102437 : Record 52102435;
+      ShipmentMgtScheduling@52102436 : Codeunit 52102436;
+    BEGIN
+      ShipmentManagementSetup.GET;
+      IF ShipmentManagementSetup."Custom Sorting Order For Picks" = ShipmentManagementSetup."Custom Sorting Order For Picks"::"Delivery Order" THEN BEGIN
+        WarehouseActivityLine.SETRANGE("Whse. Document No.",WhseShptHeader."No.");
+        WarehouseActivityLine.SETCURRENTKEY("No.");
+        IF WarehouseActivityLine.FINDSET THEN
+          REPEAT
+            WarehouseActivityLine.SETRANGE("No.",WarehouseActivityLine."No.");
+            IF WarehouseActivityHeader.GET(WarehouseActivityHeader.Type::Pick,WarehouseActivityLine."No.") THEN
+              IF WarehouseActivityHeader."Sorting Method" = WarehouseActivityHeader."Sorting Method"::" " THEN BEGIN
+                WarehouseActivityHeader.VALIDATE("Sorting Method",WarehouseActivityHeader."Sorting Method"::" ");
+                WarehouseActivityHeader.VALIDATE("Custom Sorting Order",WarehouseActivityHeader."Custom Sorting Order"::"Delivery Order");
+                WarehouseActivityHeader.MODIFY;
+                ShipmentMgtScheduling.UpdatePickLineSorting(WarehouseActivityHeader,1);
+              END;
+            WarehouseActivityLine.FINDLAST;
+            WarehouseActivityLine.SETRANGE("No.");
+          UNTIL WarehouseActivityLine.NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE ShowResult@30(NoOfWhseShipmentCreated@1000 : Integer);
+    VAR
+      WarehouseRequest@1001 : Record 5765;
+    BEGIN
+      IF NoOfWhseShipmentCreated > 0 THEN
+        MESSAGE(WarehouseShipmentHaveBeenCreatedMsg,NoOfWhseShipmentCreated)
+      ELSE
+        MESSAGE(ThereAreNoWareHouseShipmentLinesCreatedMsg);
+    END;
+
+    LOCAL PROCEDURE SwapValues@52102442(VAR Value1@52102435 : Integer;VAR Value2@52102436 : Integer);
+    VAR
+      TempValue@52102437 : Integer;
+    BEGIN
+      TempValue := Value1;
+      Value1 := Value2;
+      Value2 := TempValue;
+    END;
+
+    LOCAL PROCEDURE SetFilterSalesLine@52102466(VAR SalesLine@52102436 : Record 37;SalesHeader@52102435 : Record 36;LocationCode@52102437 : Code[10]) : Boolean;
+    BEGIN
+      WITH SalesLine DO BEGIN
+        SETCURRENTKEY("Document Type","Document No.","Location Code");
+        SETRANGE("Document Type",SalesHeader."Document Type");
+        SETRANGE("Document No.",SalesHeader."No.");
+        SETRANGE("Location Code",LocationCode);
+        SETRANGE("Drop Shipment",FALSE);
+        SETRANGE(Type,Type::Item);
+        IF SalesHeader."Document Type" = SalesHeader."Document Type"::Order THEN
+          SETFILTER("Qty. to Ship",'>%1',0)
+        ELSE
+          SETFILTER("Return Qty. to Receive",'<%1',0);
+        EXIT(FINDFIRST);
+      END;
+    END;
+
+    LOCAL PROCEDURE InvtPickLineExistForSalesLine@52102469(SourceSubType@52102437 : Option;SourceNo@52102436 : Code[20];SourceLineNo@52102435 : Integer) : Boolean;
+    VAR
+      WhseActivLine@52102439 : Record 5767;
+    BEGIN
+      WITH WhseActivLine DO BEGIN
+        SETCURRENTKEY("Source Type","Source Subtype","Source No.","Source Line No.","Activity Type");
+        SETRANGE("Source Type",DATABASE::"Sales Line");
+        SETRANGE("Source Subtype",SourceSubType);
+        SETRANGE("Source No.",SourceNo);
+        SETRANGE("Source Line No.",SourceLineNo);
+        SETRANGE("Activity Type","Activity Type"::"Invt. Pick");
+        EXIT(FINDFIRST);
+      END;
+    END;
+
+    LOCAL PROCEDURE RefreshShipmentManagementBuffer@52102451(VAR ShipmentManagementBuffer@52102435 : Record 52102442);
+    VAR
+      ShipmentManagementBuffer2@52102436 : Record 52102442;
+      WhseShptLine@52102437 : Record 7321;
+      RefreshedGroup@52102440 : TEMPORARY Record 2000000026;
+      RecordView@52102438 : Text;
+      RecordPosition@52102439 : Text;
+    BEGIN
+      ShipmentManagementBuffer2 := ShipmentManagementBuffer;
+
+      IF ShipmentManagementBuffer.FINDSET THEN
+        REPEAT
+          IF NOT RefreshedGroup.GET(ShipmentManagementBuffer."Shipment Mgt. Group No.") THEN BEGIN
+            RecordView := ShipmentManagementBuffer.GETVIEW;
+            RecordPosition := ShipmentManagementBuffer.GETPOSITION;
+            ShipmentManagementBuffer.RESET;
+            ShipmentManagementBuffer.SETRANGE("Shipment Mgt. Group No.",ShipmentManagementBuffer."Shipment Mgt. Group No.");
+            IF ShipmentManagementBuffer.FINDSET THEN
+              REPEAT
+                CASE ShipmentManagementBuffer."Source Type" OF
+                  DATABASE::"Sales Header",DATABASE::"Sales Line",DATABASE::"Transfer Header",DATABASE::"Transfer Line":
+                    BEGIN
+                      CASE ShipmentManagementBuffer."Source Type" OF
+                        DATABASE::"Sales Header":
+                          WhseShptLine.SETRANGE("Source Type",DATABASE::"Sales Line");
+                        DATABASE::"Transfer Header":
+                          WhseShptLine.SETRANGE("Source Type",DATABASE::"Transfer Line");
+                        ELSE
+                          WhseShptLine.SETRANGE("Source Type",ShipmentManagementBuffer."Source Type");
+                      END;
+                      WhseShptLine.SETRANGE("Source Subtype",ShipmentManagementBuffer."Document Type");
+                      WhseShptLine.SETRANGE("Source No.",ShipmentManagementBuffer."Document No.");
+                      WhseShptLine.SETRANGE("Source Line No.",ShipmentManagementBuffer."Document Line No.");
+                      IF WhseShptLine.FINDFIRST THEN BEGIN
+                        WhseShptLine.CALCFIELDS("Pick Qty. (Base)");
+                        ShipmentManagementBuffer."Shipment No." := WhseShptLine."No.";
+                        ShipmentManagementBuffer."Qty. to Ship (Base)" := WhseShptLine."Qty. to Ship (Base)";
+                        ShipmentManagementBuffer."Pick Quantity (Base)" := WhseShptLine."Pick Qty. (Base)";
+                        ShipmentManagementBuffer."Qty. Picked (Base)" := WhseShptLine."Qty. Picked (Base)";
+                        ShipmentManagementBuffer.MODIFY;
+                      END;
+                    END;
+                END;
+              UNTIL ShipmentManagementBuffer.NEXT = 0;
+
+            ShipmentManagementBuffer.SETVIEW(RecordView);
+            ShipmentManagementBuffer.SETPOSITION(RecordPosition);
+
+            RefreshedGroup.Number := ShipmentManagementBuffer."Shipment Mgt. Group No.";
+            RefreshedGroup.INSERT;
+          END;
+        UNTIL ShipmentManagementBuffer.NEXT = 0;
+
+      ShipmentManagementBuffer := ShipmentManagementBuffer2;
+    END;
+
+    LOCAL PROCEDURE MarkDocumentHeaderAndWhseShptHeaderFromShipmentMgtBuffer@52102452(VAR ShipmentManagementBuffer@52102435 : Record 52102442;VAR SalesHeader@52102436 : Record 36;VAR WhseShptHeader@52102437 : Record 7320;VAR TransferHeader@50000 : Record 5740;VAR PurchaseHeader@50001 : Record 38);
+    BEGIN
+      IF ShipmentManagementBuffer.FINDSET THEN
+        REPEAT
+          CASE ShipmentManagementBuffer."Source Type" OF
+            DATABASE::"Sales Header",DATABASE::"Sales Line":
+              BEGIN
+                SalesHeader.GET(ShipmentManagementBuffer."Document Type",ShipmentManagementBuffer."Document No.");
+                SalesHeader.MARK := TRUE;
+                IF ShipmentManagementBuffer."Shipment No." <> '' THEN
+                  IF WhseShptHeader.GET(ShipmentManagementBuffer."Shipment No.") THEN
+                    WhseShptHeader.MARK := TRUE;
+              END;
+            // TM MD 08/11/17 i218 START
+            DATABASE::"Purchase Header",DATABASE::"Purchase Line":
+              BEGIN
+                PurchaseHeader.GET(ShipmentManagementBuffer."Document Type",ShipmentManagementBuffer."Document No.");
+                PurchaseHeader.MARK := TRUE;
+                IF ShipmentManagementBuffer."Shipment No." <> '' THEN
+                  IF WhseShptHeader.GET(ShipmentManagementBuffer."Shipment No.") THEN
+                    WhseShptHeader.MARK := TRUE;
+              END;
+            // TM MD 08/11/17 i218 END
+            DATABASE::"Transfer Header",DATABASE::"Transfer Line":
+              BEGIN
+                TransferHeader.GET(ShipmentManagementBuffer."Document No.");
+                TransferHeader.MARK := TRUE;
+                IF ShipmentManagementBuffer."Shipment No." <> '' THEN
+                  IF WhseShptHeader.GET(ShipmentManagementBuffer."Shipment No.") THEN
+                    WhseShptHeader.MARK := TRUE;
+              END;
+          END;
+        UNTIL ShipmentManagementBuffer.NEXT = 0;
+
+      SalesHeader.MARKEDONLY := TRUE;
+      PurchaseHeader.MARKEDONLY := TRUE;  // TM MD 08/11/17 i218
+      WhseShptHeader.MARKEDONLY := TRUE;
+      TransferHeader.MARKEDONLY := TRUE;
+
+      //ConsolidateWharehouseShipmentLines(WhseShptHeader); //TM DTH BS.GAP017 29/09/17 -+  // rem TM MD GAP017 13/11/17
+    END;
+
+    LOCAL PROCEDURE GetShipMgtSetup@52102454();
+    BEGIN
+      IF NOT GotShipMgtSetup THEN
+        ShipMgtSetup.GET;
+    END;
+
+    PROCEDURE CalcNoOfShipments@52102456(VAR ShptCount@52102435 : Integer;VAR ShipmentManagementBuffer@52102436 : Record 52102442);
+    VAR
+      ShipmentMgtGroupWhseShpt@52102437 : Query 52102435;
+    BEGIN
+      ShptCount := 0;
+      ShipmentMgtGroupWhseShpt.SETRANGE(Entry_No,ShipmentManagementBuffer."Shipment Mgt. Group No.");
+
+      IF ShipmentManagementBuffer."Document No." > '' THEN BEGIN
+        ShipmentMgtGroupWhseShpt.SETRANGE(Document_Type,ShipmentManagementBuffer."Document Type");
+        ShipmentMgtGroupWhseShpt.SETRANGE(Document_No,ShipmentManagementBuffer."Document No.");
+        ShipmentMgtGroupWhseShpt.SETRANGE(Document_Line_No,ShipmentManagementBuffer."Document Line No.");
+      END;
+
+      IF ShipmentMgtGroupWhseShpt.OPEN THEN
+      WHILE ShipmentMgtGroupWhseShpt.READ DO
+        ShptCount += 1;
+    END;
+
+    PROCEDURE CalcNoOfPicks@52102460(VAR PickCount@52102435 : Integer;VAR ShipmentManagementBuffer@52102436 : Record 52102442);
+    VAR
+      ShipmentMgtGroupPicks@52102437 : Query 52102436;
+    BEGIN
+      PickCount := 0;
+      ShipmentMgtGroupPicks.SETRANGE(Entry_No,ShipmentManagementBuffer."Shipment Mgt. Group No.");
+
+      IF ShipmentManagementBuffer."Document No." > '' THEN BEGIN
+        ShipmentMgtGroupPicks.SETRANGE(Document_Type,ShipmentManagementBuffer."Document Type");
+        ShipmentMgtGroupPicks.SETRANGE(Document_No,ShipmentManagementBuffer."Document No.");
+        ShipmentMgtGroupPicks.SETRANGE(Line_No,ShipmentManagementBuffer."Document Line No.");
+      END;
+
+      IF ShipmentMgtGroupPicks.OPEN THEN
+        WHILE ShipmentMgtGroupPicks.READ DO
+          PickCount += 1;
+    END;
+
+    LOCAL PROCEDURE PopulateShptMgtFields@52102458(VAR WarehouseShipmentHeader@52102435 : Record 7320;ShipMgtGrpNo@52102436 : Integer);
+    VAR
+      ShipmentManagementGroup@52102437 : Record 52102441;
+    BEGIN
+      IF ShipmentManagementGroup.GET(ShipMgtGrpNo) THEN BEGIN
+        WITH WarehouseShipmentHeader DO BEGIN
+          "Delivery Area Code" := ShipmentManagementGroup."Delivery Area Code";
+          "Shipment Mgt. Group No." := ShipMgtGrpNo;
+          "Shipping Agent Code" := ShipmentManagementGroup."Shipping Agent Code";
+          "Shipping Agent Service Code" := ShipmentManagementGroup."Shipping Agent Service Code";
+          "Bin Code" := ShipmentManagementGroup."Shipment Bin";
+          MODIFY;
+        END;
+      END;
+    END;
+
+    PROCEDURE SaveDeliveryOrder@52102461(VAR ShipmentManagementBuffer@52102436 : Record 52102442);
+    VAR
+      DeliveryAreaMgt@52102435 : Codeunit 52102435;
+      DeliveryAreaCode@52102437 : Code[20];
+    BEGIN
+      DeliveryAreaMgt.SaveDeliveryOrderDialog(ShipmentManagementBuffer,DeliveryAreaCode);
+    END;
+
+    [EventSubscriber(Page,7335,OnAfterActionEvent,Action24)]
+    LOCAL PROCEDURE OnWarehouseShipmentCreatePick@52102464(VAR Rec@52102435 : Record 7320);
+    BEGIN
+      CheckAndUpdatePickSortingOrder(Rec);
+    END;
+
+    [Business]
+    LOCAL PROCEDURE BeforeAddSalesDocumentLineToShipmentMgtBuffer@52102467(VAR SalesLine@52102436 : Record 37;VAR AddSalesLine@52102437 : Boolean;VAR Handled@52102435 : Boolean);
+    BEGIN
+    END;
+
+    [Business]
+    LOCAL PROCEDURE BeforeAddPurchaseDocumentLineToShipmentMgtBuffer@50035(VAR PurchaseLine@52102436 : Record 39;VAR AddPurchaseLine@52102437 : Boolean;VAR Handled@52102435 : Boolean);
+    BEGIN
+    END;
+
+    [Business]
+    LOCAL PROCEDURE BeforeAddTransferDocumentLineToShipmentMgtBuffer@50036(VAR TransferLine@52102436 : Record 5741;VAR AddTransferLine@52102437 : Boolean;VAR Handled@52102435 : Boolean);
+    BEGIN
+    END;
+
+    [Business]
+    LOCAL PROCEDURE AfterAddSalesDocumentLineToShipmentMgtBuffer@52102468(VAR SalesLine@52102435 : Record 37);
+    BEGIN
+    END;
+
+    PROCEDURE AddTransferOrdersToShipmentMgtBuffer@50000(VAR ShipmentMgtBuffer@52102435 : TEMPORARY Record 52102442;OnlyUnassignedLines@52102444 : Boolean);
+    VAR
+      ShipmentMgtBuffer2@52102437 : TEMPORARY Record 52102442;
+      TransferHeader@52102438 : Record 5740;
+      TransferLine@50000 : Record 5741;
+      ShiptoAddress@52102440 : Record 222;
+      ShipmentManagementEntry@52102439 : Record 52102443;
+      Customer@52102436 : Record 18;
+      WhseShptLine@52102443 : Record 7321;
+      ShipmentMgtTaskMgt@52102441 : Codeunit 52102438;
+      WhseShptLineExists@52102445 : Boolean;
+      RecRef@50001 : RecordRef;
+      RecRef2@50002 : RecordRef;
+      Handled@50004 : Boolean;
+      AddTransferLine@50003 : Boolean;
+    BEGIN
+      ShipmentMgtBuffer2 := ShipmentMgtBuffer;
+
+      //add transfer order documents
+      ShipmentManagementEntry.SETRANGE("Shipment Mgt. Group No.",ShipmentMgtBuffer."Shipment Mgt. Group No.");
+      ShipmentManagementEntry.SETRANGE("Source Type",DATABASE::"Transfer Header");
+      ShipmentManagementEntry.SETRANGE("Document Type",0);
+      ShipmentManagementEntry.SETCURRENTKEY("Shipment Mgt. Group No.","Source Type","Document Type","Destination No.","Ship-to Code","Post Code");
+      IF ShipmentManagementEntry.FINDSET THEN
+        REPEAT
+          TransferHeader.GET(ShipmentManagementEntry."Document No.");
+          RecRef2.GETTABLE(TransferHeader);
+          IF ShipmentMgtTaskMgt.HeaderReadyForShipmentMgt(RecRef2) THEN BEGIN
+            TransferLine.GET(ShipmentManagementEntry."Document No.",ShipmentManagementEntry."Document Line No.");
+            WhseShptLine.SETRANGE("Source Type",DATABASE::"Transfer Line");
+            WhseShptLine.SETRANGE("Source Subtype",0); //transferline."Document Type");
+            WhseShptLine.SETRANGE("Source No.",TransferLine."Document No.");
+            WhseShptLine.SETRANGE("Source Line No.",TransferLine."Line No.");
+            WhseShptLineExists := WhseShptLine.FINDFIRST;
+
+            IF NOT (WhseShptLineExists AND OnlyUnassignedLines) THEN BEGIN
+              TransferHeader.GET(ShipmentManagementEntry."Document No.");
+              RecRef.GETTABLE(TransferHeader);
+              IF ShipmentMgtTaskMgt.HeaderReadyForShipmentMgt(RecRef) THEN BEGIN
+                // TM MD i218 15/11/17 START
+                BeforeAddTransferDocumentLineToShipmentMgtBuffer(TransferLine,AddTransferLine,Handled);
+                IF (NOT Handled) OR (AddTransferLine AND Handled) THEN BEGIN
+                // TM MD i218 15/11/17 END
+                  ShipmentMgtBuffer.INIT;
+                  ShipmentMgtBuffer."Shipment Mgt. Group No." := ShipmentManagementEntry."Shipment Mgt. Group No.";
+                  ShipmentMgtBuffer."Source Type" := ShipmentManagementEntry."Source Type";
+                  ShipmentMgtBuffer."Document Type" := ShipmentManagementEntry."Document Type";
+                  ShipmentMgtBuffer."Document No." := ShipmentManagementEntry."Document No.";
+                  ShipmentMgtBuffer."Document Line No." := ShipmentManagementEntry."Document Line No.";
+                  ShipmentMgtBuffer.Indentation := 2;
+                  ShipmentMgtBuffer.City := TransferHeader."Transfer-to City";
+                  ShipmentMgtBuffer."Country/Region Code" := TransferHeader."Ship. Mgt. Country/Region Code";
+                  ShipmentMgtBuffer."Delivery Order" := ShipmentManagementEntry."Delivery Order";
+                  // TM AKH GAP006 25/08/17 START
+                  BSShipmentMgt.BeforeShipmentMgtBufferInsert(ShipmentMgtBuffer);
+                  // TM AKH GAP006 25/08/17 END
+                  ShipmentMgtBuffer.AddNewEntry;
+
+                  AddDropNoToShipmentMgtBuffer(ShipmentMgtBuffer,ShipmentManagementEntry."Source Type");
+
+                  ShipmentMgtBuffer."Item No." := TransferLine."Item No.";
+                  ShipmentMgtBuffer."Variant Code" := TransferLine."Variant Code";
+                  ShipmentMgtBuffer.Description := TransferLine.Description;
+                  ShipmentMgtBuffer.Quantity := TransferLine."Outstanding Quantity";
+                  ShipmentMgtBuffer."Quantity (Base)" := TransferLine."Outstanding Qty. (Base)";
+                  ShipmentMgtBuffer."Unit of Measure Code" := TransferLine."Unit of Measure Code";
+
+                  //add the volume, net weight, gross weight, amount
+                  ShipmentMgtBuffer.Volume := TransferLine."Outstanding Quantity" * TransferLine."Unit Volume";
+                  ShipmentMgtBuffer."Net Weight" := TransferLine."Outstanding Quantity" * TransferLine."Net Weight";
+                  ShipmentMgtBuffer."Gross Weight" := TransferLine."Outstanding Quantity" * TransferLine."Gross Weight";
+                  ShipmentMgtBuffer."Amount (LCY)" := 0; //transferline."Outstanding Amount (LCY)";
+
+                  IF WhseShptLineExists THEN BEGIN
+                    WhseShptLine.CALCFIELDS("Pick Qty. (Base)");
+                    ShipmentMgtBuffer."Shipment No." := WhseShptLine."No.";
+                    ShipmentMgtBuffer."Qty. to Ship (Base)" := WhseShptLine."Qty. to Ship (Base)";
+                    ShipmentMgtBuffer."Pick Quantity (Base)" := WhseShptLine."Pick Qty. (Base)";
+                    ShipmentMgtBuffer."Qty. Picked (Base)" := WhseShptLine."Qty. Picked (Base)";
+                  END;
+                  ShipmentMgtBuffer."Delivery Area Code" := STRSUBSTNO('%1/%2',ShipmentMgtBuffer."Document No.",ShipmentMgtBuffer."Document Line No.");
+                  ShipmentMgtBuffer."Line Style" := ShipmentMgtBuffer.SetLineStyle;
+                  ShipmentMgtBuffer.MODIFY;
+                END;
+              END;  // TM MD i218 15/11/17
+            END;
+          END;
+        UNTIL ShipmentManagementEntry.NEXT = 0;
+
+      ShipmentMgtBuffer.GET(ShipmentMgtBuffer2."Entry No.");
+    END;
+
+    LOCAL PROCEDURE GetNextWarehouseShipmentLineNo@50002(WarehouseShipmentNo@50000 : Code[20]) : Integer;
+    VAR
+      LastWarehouseShipmentLine@50001 : Record 7321;
+      LastLineNo@50002 : Integer;
+    BEGIN
+      //TM DTH BS.GAP017 29/09/17
+      LastWarehouseShipmentLine.SETRANGE("No.", WarehouseShipmentNo);
+      IF LastWarehouseShipmentLine.FINDLAST THEN
+        LastLineNo := LastWarehouseShipmentLine."Line No.";
+      EXIT(LastLineNo + 10000);
+    END;
+
+    PROCEDURE SetShowOption@50006(NewShowOption@50000 : Option);
+    BEGIN
+      // TM MD GAP006 10/10/17
+      ShowOption := NewShowOption;
+    END;
+
+    LOCAL PROCEDURE PrintPackingList@50007(WarehouseShipmentHeader@50000 : Record 7320);
+    BEGIN
+      GetTestCertDefault(WarehouseShipmentHeader);
+    END;
+
+    LOCAL PROCEDURE PrintManifest@50008(WarehouseShipmentHeader@50000 : Record 7320);
+    VAR
+      PostedWhseShipmentHeader@50001 : Record 7322;
+      Manifest@50002 : Report 50012;
+    BEGIN
+      GetSalesSetup;
+      SalesSetup.TESTFIELD("Manifest Print Code");
+      WITH PostedWhseShipmentHeader DO BEGIN
+        SETRANGE("Whse. Shipment No.", WarehouseShipmentHeader."No.");
+        IF FINDFIRST THEN BEGIN
+          //TM LV I387 03/01/18 START
+          //PrintToDocumentDelivery(PostedWhseShipmentHeader, SalesSetup."Manifest Print Code",TRUE);
+          Manifest.SETTABLEVIEW(PostedWhseShipmentHeader);
+          Manifest.USEREQUESTPAGE(FALSE);
+          Manifest.RUNMODAL;
+          //TM LV I387 03/01/18 END
+        END;
+      END;
+    END;
+
+    LOCAL PROCEDURE GetTestCertDefault@50009(WarehouseShipmentHeader@50001 : Record 7320);
+    VAR
+      PostedWhseShipmentHeader@50002 : Record 7322;
+      TestCertDefault@50006 : ' ,Print,Email,Print and Email';
+    BEGIN
+      GetSalesSetup;
+      SalesSetup.TESTFIELD("Packing List Print Code");
+      SalesSetup.TESTFIELD("Packing List Email Code");
+      WITH PostedWhseShipmentHeader DO BEGIN
+        SETRANGE("Whse. Shipment No.", WarehouseShipmentHeader."No.");
+        IF FINDFIRST THEN BEGIN
+          PrintToDocumentDelivery(PostedWhseShipmentHeader, SalesSetup."Packing List Email Code",FALSE);
+          PrintToDocumentDelivery(PostedWhseShipmentHeader, SalesSetup."Packing List Print Code",TRUE);
+        END;
+      END;
+    END;
+
+    LOCAL PROCEDURE PrintToDocumentDelivery@50012(VAR PostedWhseShipmentHeader@50000 : Record 7322;DocTypeCode@50001 : Code[10];SendToSystemPrinter@50002 : Boolean);
+    VAR
+      DocumentDeliveryMgt@50003 : Codeunit 52102235;
+      DDRecord@50004 : Variant;
+      DDRecRef@50005 : RecordRef;
+    BEGIN
+      PostedWhseShipmentHeader.SETRECFILTER;
+      DDRecRef.OPEN(DATABASE::"Posted Whse. Shipment Header");
+      DDRecRef.GETTABLE(PostedWhseShipmentHeader);
+      DDRecRef.SETRECFILTER;
+
+      DocumentDeliveryMgt.SetDocumentTypeCode(DocTypeCode);
+      // TM MD i240 04/12/17 START
+      IF SendToSystemPrinter THEN
+        DocumentDeliveryMgt.SetProcessType(1)
+      ELSE
+      // TM MD i240 04/12/17 END
+        DocumentDeliveryMgt.SetProcessType(2);
+      DocumentDeliveryMgt.SetBatchType(0);
+      DocumentDeliveryMgt.SetBatchSendBehaviour(0);
+
+      DocumentDeliveryMgt.SubmitRecords(DDRecRef);
+    END;
+
+    LOCAL PROCEDURE GetSalesSetup@50014();
+    BEGIN
+      IF NOT GotSalesSetup THEN
+        SalesSetup.GET;
+      GotSalesSetup := TRUE;
+    END;
+
+    LOCAL PROCEDURE CheckLinesAreReadyForPosting@50010(VAR ShipMgtLineToCheck@50000 : TEMPORARY Record 52102442);
+    BEGIN
+      // TM MD GAP017 13/11/17
+      WITH ShipMgtLineToCheck DO BEGIN
+        IF ISEMPTY THEN EXIT;
+        FINDSET;
+        REPEAT
+          CheckGroupLoadIsAssigned(ShipMgtLineToCheck);  // TM MD i233 20/11/17
+          //CheckLineHasNoPendingActivity(ShipMgtLineToCheck); //TM LV I499 16/01/18
+          //CheckLineIsReadyForPosting(ShipMgtLineToCheck); //TM LV I499 16/01/18
+        UNTIL NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE CheckGroupLoadIsAssigned@50039(VAR ShipMgtLinesToCheck@50000 : TEMPORARY Record 52102442);
+    VAR
+      ShipmentManagementGroup@50001 : Record 52102441;
+    BEGIN
+      // TM MD i233 20/11/17
+      WITH ShipMgtLinesToCheck DO BEGIN
+        ShipmentManagementGroup.GET("Shipment Mgt. Group No.");
+        ShipmentManagementGroup.TESTFIELD("Load No.");
+      END;
+    END;
+
+    LOCAL PROCEDURE CheckLineHasNoPendingActivity@50011(VAR ShipMgtLinesToCheck@50000 : TEMPORARY Record 52102442);
+    VAR
+      WhseShptLine@50001 : Record 7321;
+    BEGIN
+      // TM MD GAP017 13/11/17
+      WITH ShipMgtLinesToCheck DO BEGIN
+        WhseShptLine.SETRANGE("Source Subtype","Document Type");
+        WhseShptLine.SETRANGE("Source No.","Document No.");
+        WhseShptLine.SETRANGE("Source Line No.","Document Line No.");
+        WhseShptLine.SETFILTER("Pick Qty.",'>0');
+        IF WhseShptLine.FINDFIRST THEN
+          WhseShptLine.FIELDERROR("Pick Qty.");
+      END;
+    END;
+
+    LOCAL PROCEDURE CheckLineIsReadyForPosting@50032(VAR ShipMgtLinesToCheck@50000 : TEMPORARY Record 52102442);
+    VAR
+      WhseShptLine@50001 : Record 7321;
+      Location@50002 : Record 14;
+    BEGIN
+      // TM MD GAP017 13/11/17
+      WITH ShipMgtLinesToCheck DO BEGIN
+        WhseShptLine.SETRANGE("Source Subtype","Document Type");
+        WhseShptLine.SETRANGE("Source No.","Document No.");
+        WhseShptLine.SETRANGE("Source Line No.","Document Line No.");
+        WhseShptLine.FINDSET;
+        REPEAT
+          Location.GET(WhseShptLine."Location Code");
+          WhseShptLine.TESTFIELD("Qty. to Ship");
+          // TM MD i233 20/11/17 START
+          IF WhseShptLine.Quantity <> WhseShptLine."Qty. to Ship" THEN
+            WhseShptLine.FIELDERROR("Qty. to Ship");
+          // TM MD i233 20/11/17 END
+          IF Location."Require Pick" THEN
+            IF WhseShptLine."Qty. to Ship" <> WhseShptLine."Qty. Picked" THEN
+              WhseShptLine.FIELDERROR("Qty. Picked");
+        UNTIL WhseShptLine.NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE CheckDocumentsAreReadyForPosting@50041(VAR ShipMgtLineToCheck@50001 : TEMPORARY Record 52102442);
+    VAR
+      CheckedDocument@50000 : TEMPORARY Record 52102442;
+    BEGIN
+      // TM MD i302 08/12/17
+      WITH ShipMgtLineToCheck DO BEGIN
+        IF ISEMPTY THEN EXIT;
+        FINDSET;
+        REPEAT
+          CheckedDocument.SETRANGE("Source Type","Source Type");
+          CheckedDocument.SETRANGE("Document Type","Document Type");
+          CheckedDocument.SETRANGE("Document No.","Document No.");
+          IF CheckedDocument.ISEMPTY THEN BEGIN
+            CheckedDocument := ShipMgtLineToCheck;
+            CheckedDocument.INSERT;
+
+            CheckDocumentIsReadyForPosting(ShipMgtLineToCheck);
+          END;
+        UNTIL NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE CheckDocumentIsReadyForPosting@50001(VAR ShipMgtLineToCheck@50000 : TEMPORARY Record 52102442);
+    BEGIN
+      // TM MD i302 08/12/17
+      WITH ShipMgtLineToCheck DO BEGIN
+        CASE "Source Type" OF
+          DATABASE::"Sales Header":
+            CheckSalesHeaderIsReadyForPosting("Document Type","Document No.");
+          DATABASE::"Purchase Header":
+            CheckPurchHeaderIsReadyForPosting("Document Type","Document No.");
+          DATABASE::"Transfer Header":
+            CheckTransHeaderIsReadyForPosting("Document No.");
+        END;
+      END;
+    END;
+
+    LOCAL PROCEDURE CheckSalesHeaderIsReadyForPosting@50003(DocumentType@50000 : Option;DocumentNo@50001 : Code[20]);
+    VAR
+      Header@50002 : Record 36;
+      PostingHandler@50003 : Codeunit 80;
+    BEGIN
+      // TM MD i302 08/12/17
+      WITH Header DO BEGIN
+        GET(DocumentType,DocumentNo);
+        PostingHandler.CheckOrderForShipment(Header);
+      END;
+    END;
+
+    LOCAL PROCEDURE CheckPurchHeaderIsReadyForPosting@50005(DocumentType@50003 : Option;DocumentNo@50002 : Code[20]);
+    VAR
+      Header@50001 : Record 38;
+      PostingHandler@50000 : Codeunit 90;
+    BEGIN
+      // TM MD i302 08/12/17
+      WITH Header DO BEGIN
+        GET(DocumentType,DocumentNo);
+        PostingHandler.CheckOrderForShipment(Header);
+      END;
+    END;
+
+    LOCAL PROCEDURE CheckTransHeaderIsReadyForPosting@50044(DocumentNo@50002 : Code[20]);
+    VAR
+      Header@50005 : Record 5740;
+      PostingHandler@50004 : Codeunit 5704;
+    BEGIN
+      // TM MD i302 08/12/17
+      WITH Header DO BEGIN
+        GET(DocumentNo);
+        PostingHandler.CheckOrderForShipment(Header);
+      END;
+    END;
+
+    LOCAL PROCEDURE CreateWhseShptHeadersToPost@50013(VAR ShipmentManagementBufferToPost@50000 : TEMPORARY Record 52102442;VAR ShipmentManagementBuffer@50005 : TEMPORARY Record 52102442;VAR WhseShptHeader@50001 : Record 7320);
+    VAR
+      TempWhseShptHdr@50002 : TEMPORARY Record 7320;
+      DropNoShptMgtBufferEntry@50003 : TEMPORARY Record 52102442;
+      ExistingWhseShptLine@50004 : Record 7321;
+    BEGIN
+      // TM MD GAP017 13/11/17 START
+      WITH ShipmentManagementBufferToPost DO BEGIN
+        IF ISEMPTY THEN EXIT;
+        FINDSET;
+        REPEAT
+          ShipmentManagementBuffer.GET("Entry No.");
+          GetDropNoForShipmentMgtBuffer(ShipmentManagementBuffer,DropNoShptMgtBufferEntry);
+          GetExistingWhseShptLine(ShipmentManagementBuffer,ExistingWhseShptLine);
+          WhseShptHeader.GET(ExistingWhseShptLine."No.");
+          IF NOT CheckExistingWhseShptIsConsistent(WhseShptHeader,"Shipment Mgt. Group No.",DropNoShptMgtBufferEntry."Delivery Area Code") THEN BEGIN
+            TempWhseShptHdr.SETRANGE("Shipment Mgt. Group No.","Shipment Mgt. Group No.");
+            TempWhseShptHdr.SETRANGE("Drop No.",DropNoShptMgtBufferEntry."Delivery Area Code");
+            IF NOT TempWhseShptHdr.FINDFIRST THEN BEGIN
+              CreateNewWhseShptHeaderForDrop(DropNoShptMgtBufferEntry,WhseShptHeader);
+            END ELSE
+              WhseShptHeader.GET(TempWhseShptHdr."No.");
+            MoveExistingShptLineToDropShpt(ExistingWhseShptLine,WhseShptHeader);
+          END;
+          IF NOT TempWhseShptHdr.GET(WhseShptHeader."No.") THEN BEGIN
+            TempWhseShptHdr := WhseShptHeader;
+            TempWhseShptHdr.INSERT;
+          END;
+        UNTIL NEXT = 0;
+      END;
+      COMMIT;
+      TempWhseShptHdr.RESET;
+      IF TempWhseShptHdr.FINDSET THEN
+        REPEAT
+          WhseShptHeader.GET(TempWhseShptHdr."No.");
+          WhseShptHeader.MARK := TRUE;
+        UNTIL TempWhseShptHdr.NEXT = 0;
+
+      WhseShptHeader.MARKEDONLY := TRUE;
+    END;
+
+    LOCAL PROCEDURE CheckExistingWhseShptIsConsistent@50024(VAR WhseShptHeader@50002 : Record 7320;ShptMgtGrpNo@50003 : Integer;DropNo@50000 : Code[41]) : Boolean;
+    BEGIN
+      // TM MD GAP017 13/11/17
+      IF NOT CheckExistingWhseShptLinesAreConsistent(WhseShptHeader,ShptMgtGrpNo) THEN EXIT;
+      IF NOT CheckExistingWhseShptHeaderIsConsistent(WhseShptHeader,ShptMgtGrpNo,DropNo) THEN EXIT;
+      EXIT(TRUE);
+    END;
+
+    LOCAL PROCEDURE CheckExistingWhseShptLinesAreConsistent@50028(VAR WhseShptHeader@50002 : Record 7320;ShptMgtGrpNo@50003 : Integer) : Boolean;
+    VAR
+      WhseShptLine@50000 : Record 7321;
+    BEGIN
+      // TM MD GAP017 13/11/17
+      WITH WhseShptLine DO BEGIN
+        SETRANGE("No.",WhseShptHeader."No.");
+        IF FINDSET THEN
+          REPEAT
+            IF GetSourceDocLineShptGrpNo("Source Type","Source Subtype","Source No.","Source Line No.") <> ShptMgtGrpNo THEN EXIT;
+          UNTIL NEXT = 0;
+      END;
+      EXIT(TRUE);
+    END;
+
+    LOCAL PROCEDURE CheckExistingWhseShptHeaderIsConsistent@50029(VAR WhseShptHeader@50002 : Record 7320;ShptMgtGrpNo@50003 : Integer;DropNo@50000 : Code[41]) : Boolean;
+    VAR
+      ShipmentManagementGroup@50001 : Record 52102441;
+    BEGIN
+      // TM MD GAP017 13/11/17
+      ShipmentManagementGroup.GET(ShptMgtGrpNo);
+      WITH WhseShptHeader DO BEGIN
+        EXIT(
+          ("Delivery Area Code" = ShipmentManagementGroup."Delivery Area Code") AND
+          ("Shipment Mgt. Group No." = ShipmentManagementGroup."Entry No.") AND
+          ("Shipping Agent Code" = ShipmentManagementGroup."Shipping Agent Code") AND
+          ("Shipping Agent Service Code" = ShipmentManagementGroup."Shipping Agent Service Code") AND
+          ("Shipment Date" = ShipmentManagementGroup."Shipment/Expected Receipt Date") AND
+          ("Drop No." = DropNo));
+      END;
+    END;
+
+    LOCAL PROCEDURE GetDropNoForShipmentMgtBuffer@50015(VAR ShipmentMgtBuffer@52102435 : TEMPORARY Record 52102442;VAR DropNoShptMgtBufferEntry@50002 : Record 52102442);
+    VAR
+      ShipmentMgtBuffer2@52102437 : TEMPORARY Record 52102442;
+      ShipmentMgtBufferCheck@52102441 : TEMPORARY Record 52102442;
+      SalesHeader@52102438 : Record 36;
+      PurchaseHeader@52102440 : Record 38;
+      TransferHeader@50000 : Record 5740;
+      Customer@52102436 : Record 18;
+      Vendor@52102442 : Record 23;
+      Location@50001 : Record 14;
+      DestinationNo@52102443 : Code[20];
+      ShipToCode@52102444 : Code[10];
+      ShptMgtPostCode@52102445 : Code[20];
+    BEGIN
+      // TM MD GAP017 13/11/17
+      ShipmentMgtBuffer2 := ShipmentMgtBuffer;
+      ShipmentMgtBufferCheck.COPY(ShipmentMgtBuffer,TRUE);
+
+      CASE ShipmentMgtBuffer2."Source Type" OF
+        DATABASE::"Sales Header":
+          BEGIN
+            SalesHeader.GET(ShipmentMgtBuffer."Document Type",ShipmentMgtBuffer2."Document No.");
+            DestinationNo := SalesHeader."Sell-to Customer No.";
+            ShipToCode := SalesHeader."Ship-to Code";
+            ShptMgtPostCode := SalesHeader."Shipment Mgt. Post Code";
+          END;
+        DATABASE::"Purchase Header":
+          BEGIN
+            PurchaseHeader.GET(ShipmentMgtBuffer."Document Type",ShipmentMgtBuffer2."Document No.");
+            DestinationNo := PurchaseHeader."Buy-from Vendor No.";
+            ShipToCode := PurchaseHeader."Ship-to Code";
+            ShptMgtPostCode := PurchaseHeader."Shipment Mgt. Post Code";
+          END;
+        DATABASE::"Transfer Header":
+          BEGIN
+            TransferHeader.GET(ShipmentMgtBuffer."Document No.");
+            DestinationNo := TransferHeader."Transfer-to Code";
+            ShipToCode := '';
+            ShptMgtPostCode := TransferHeader."Shipment Mgt. Post Code";
+          END;
+      END;
+
+      ShipmentMgtBufferCheck.RESET;
+      ShipmentMgtBufferCheck.SETRANGE("Shipment Mgt. Group No.",ShipmentMgtBuffer2."Shipment Mgt. Group No.");
+      ShipmentMgtBufferCheck.SETRANGE("Destination No.",DestinationNo);
+      ShipmentMgtBufferCheck.SETRANGE("Ship-to Code",ShipToCode);
+      ShipmentMgtBufferCheck.SETRANGE("Post Code",ShptMgtPostCode);
+      ShipmentMgtBufferCheck.SETRANGE(Indentation,1);
+      ShipmentMgtBufferCheck.FINDFIRST;
+      DropNoShptMgtBufferEntry := ShipmentMgtBufferCheck;
+      ShipmentMgtBuffer := ShipmentMgtBuffer2;
+    END;
+
+    LOCAL PROCEDURE GetExistingWhseShptLine@50017(VAR ShipmentMgtBuffer@50000 : TEMPORARY Record 52102442;VAR WhseShptLine@50001 : Record 7321);
+    BEGIN
+      // TM MD GAP017 13/11/17
+      WITH ShipmentMgtBuffer DO BEGIN
+        WhseShptLine.RESET;
+        WhseShptLine.SETRANGE("Source Type",TranslateBufferSourceType("Source Type"));
+        WhseShptLine.SETRANGE("Source Subtype","Document Type");
+        WhseShptLine.SETRANGE("Source No.","Document No.");
+        WhseShptLine.SETRANGE("Source Line No.","Document Line No.");
+        WhseShptLine.FINDFIRST;
+      END;
+    END;
+
+    LOCAL PROCEDURE CreateNewWhseShptHeaderForDrop@50016(VAR ShipmentManagementBuffer@50001 : Record 52102442;VAR WhseShptHeader@50000 : Record 7320);
+    VAR
+      NewWhseShptHdr@50002 : Record 7320;
+      ShipmentManagementGroup@50003 : Record 52102441;
+    BEGIN
+      // TM MD GAP017 13/11/17
+      WITH NewWhseShptHdr DO BEGIN
+        INIT;
+        "No." := '';
+        INSERT(TRUE);
+        TRANSFERFIELDS(WhseShptHeader,FALSE);
+        "External Document No." := '';
+        UpdateWhseShptHdrFieldsFromShptGroupNo(NewWhseShptHdr,ShipmentManagementBuffer."Shipment Mgt. Group No.");
+        ShipmentManagementGroup.GET("Shipment Mgt. Group No.");
+        VALIDATE("Shipment Date",ShipmentManagementGroup."Shipment/Expected Receipt Date");
+        VALIDATE("Drop No.",ShipmentManagementBuffer."Delivery Area Code");
+        VALIDATE("Delivery Order",ShipmentManagementBuffer."Delivery Order");
+        MODIFY(TRUE);
+        WhseShptHeader := NewWhseShptHdr;
+      END;
+    END;
+
+    PROCEDURE UpdateWhseShptHdrFieldsFromShptGroupNo@50018(VAR WhseShptHdr@50000 : Record 7320;ShptMgtGrpNo@50001 : Integer);
+    VAR
+      ShipmentManagementGroup@50002 : Record 52102441;
+    BEGIN
+      // TM MD GAP017 13/11/17
+      // code moved from "Get Source Documents".CreateShptHeader
+      ShipmentManagementGroup.GET(ShptMgtGrpNo);
+      WITH WhseShptHdr DO BEGIN
+        "Delivery Area Code" := ShipmentManagementGroup."Delivery Area Code";
+        "Shipment Mgt. Group No." := ShptMgtGrpNo;
+        "Shipping Agent Code" := ShipmentManagementGroup."Shipping Agent Code";
+        "Shipping Agent Service Code" := ShipmentManagementGroup."Shipping Agent Service Code";
+        "Vehicle Registration No." := ShipmentManagementGroup."Vehicle Registration No.";
+        "Driver Code" := ShipmentManagementGroup."Driver Code";
+        "Load No." := ShipmentManagementGroup."Load No.";
+      END;
+    END;
+
+    LOCAL PROCEDURE MoveExistingShptLineToDropShpt@50020(VAR WhseShptLine@50000 : Record 7321;ToWhseShptHeader@50001 : Record 7320);
+    VAR
+      ToWhseShptLine@50002 : Record 7321;
+      NewLineNo@50003 : Integer;
+      Location@50004 : Record 14;
+      DummyWhseActLine@50005 : TEMPORARY Record 5767;
+    BEGIN
+      // TM MD GAP017 13/11/17
+      ToWhseShptLine.SETRANGE("No.",ToWhseShptHeader."No.");
+      IF NOT ToWhseShptLine.FINDLAST THEN
+        ToWhseShptLine.INIT;
+      NewLineNo := ToWhseShptLine."Line No." + 10000;
+      ToWhseShptLine := WhseShptLine;
+      ToWhseShptLine."No." := ToWhseShptHeader."No.";
+      ToWhseShptLine."Line No." := NewLineNo;
+      ToWhseShptLine."Shipment Mgt. Group No." := ToWhseShptHeader."Shipment Mgt. Group No.";
+      ToWhseShptLine.INSERT;
+      RepointWhseTracking(WhseShptLine,ToWhseShptLine);//TM TE i420 29/11/18
+      WhseShptLine.DELETE;
+
+      // TM MD i409 05/01/18 START
+      Location.GET(WhseShptLine."Location Code");
+      IF Location."Require Pick" THEN BEGIN
+      // TM MD i409 05/01/18 END
+        MoveWhseActLines(DummyWhseActLine."Activity Type"::Pick,WhseShptLine,ToWhseShptLine);  // TM MD i420 23/01/18
+        MoveRegWhseActLines(WhseShptLine,ToWhseShptLine);
+        IF Location."Two-Stage Pick" THEN BEGIN  // TM MD i409 05/01/18
+          MoveWhseActLines(DummyWhseActLine."Activity Type"::"Invt. Movement",WhseShptLine,ToWhseShptLine);  // TM MD i420 23/01/18
+          MoveRegInvMvtLines(WhseShptLine,ToWhseShptLine);
+        END;  // TM MD i409 05/01/18
+        MoveWhseEntries(WhseShptLine,ToWhseShptLine);
+      END; // TM MD i409 05/01/18
+
+      DeleteWhseShptHeaderIfNoMoreLines(WhseShptLine);
+    END;
+
+    LOCAL PROCEDURE MoveWhseActLines@50042(ActivityType@50003 : Option;VAR WhseShptLine@50000 : Record 7321;ToWhseShptLine@50001 : Record 7321);
+    VAR
+      WhseActivityLine@50002 : Record 5767;
+    BEGIN
+      // TM MD i420 23/01/18
+      WITH WhseActivityLine DO BEGIN
+        SETRANGE("Activity Type",ActivityType);
+        SETRANGE("Orig. Whse. Document Type","Whse. Document Type"::Shipment);
+        SETRANGE("Orig. Whse. Document No.",WhseShptLine."No.");
+        SETRANGE("Orig. Whse. Document Line No.",WhseShptLine."Line No.");
+        IF ISEMPTY THEN EXIT;
+        FINDSET(TRUE);
+        REPEAT
+          "Whse. Document No." := ToWhseShptLine."No.";
+          "Whse. Document Line No." := ToWhseShptLine."Line No.";
+          "Orig. Whse. Document No." := ToWhseShptLine."No.";
+          "Orig. Whse. Document Line No." := ToWhseShptLine."Line No.";
+          MODIFY;
+        UNTIL NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE MoveRegWhseActLines@50021(VAR WhseShptLine@50000 : Record 7321;ToWhseShptLine@50001 : Record 7321);
+    VAR
+      RegisteredWhseActivityLine@50002 : Record 5773;
+    BEGIN
+      // TM MD GAP017 13/11/17
+      WITH RegisteredWhseActivityLine DO BEGIN
+        SETRANGE("Activity Type","Activity Type"::Pick);  // TM MD i420 23/01/18
+        SETRANGE("Orig. Whse. Document Type","Whse. Document Type"::Shipment);
+        SETRANGE("Orig. Whse. Document No.",WhseShptLine."No.");
+        SETRANGE("Orig. Whse. Document Line No.",WhseShptLine."Line No.");
+        IF ISEMPTY THEN EXIT;  // TM MD i409 05/01/18
+        FINDSET(TRUE);
+        REPEAT
+          "Whse. Document No." := ToWhseShptLine."No.";
+          "Whse. Document Line No." := ToWhseShptLine."Line No.";
+          MODIFY;
+        UNTIL NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE MoveRegInvMvtLines@50050(VAR WhseShptLine@50000 : Record 7321;ToWhseShptLine@50001 : Record 7321);
+    VAR
+      RegisteredInvtMovementLine@50002 : Record 7345;
+    BEGIN
+      // TM MD GAP017 13/11/17
+      WITH RegisteredInvtMovementLine DO BEGIN
+        SETRANGE("Orig. Whse. Document Type","Whse. Document Type"::Shipment);
+        SETRANGE("Orig. Whse. Document No.",WhseShptLine."No.");
+        SETRANGE("Orig. Whse. Document Line No.",WhseShptLine."Line No.");
+        IF ISEMPTY THEN EXIT;  // TM MD i409 05/01/18
+        FINDSET(TRUE);
+        REPEAT
+          "Whse. Document No." := ToWhseShptLine."No.";
+          "Whse. Document Line No." := ToWhseShptLine."Line No.";
+          MODIFY;
+        UNTIL NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE MoveWhseEntries@50022(VAR WhseShptLine@50000 : Record 7321;ToWhseShptLine@50001 : Record 7321);
+    VAR
+      WarehouseEntry@50002 : Record 7312;
+    BEGIN
+      // TM MD GAP017 13/11/17
+      WITH WarehouseEntry DO BEGIN
+        SETRANGE("Orig. Whse. Document Type","Whse. Document Type"::Shipment);
+        SETRANGE("Orig. Whse. Document No.",WhseShptLine."No.");
+        SETRANGE("Orig. Whse. Document Line No.",WhseShptLine."Line No.");
+        IF ISEMPTY THEN EXIT;  // TM MD i409 05/01/18
+        FINDSET(TRUE);
+        REPEAT
+          "Whse. Document No." := ToWhseShptLine."No.";
+          "Whse. Document Line No." := ToWhseShptLine."Line No.";
+          MODIFY;
+        UNTIL NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE DeleteWhseShptHeaderIfNoMoreLines@50023(WhseShptLine@50000 : Record 7321);
+    VAR
+      WhseShptHeader@50001 : Record 7320;
+      WhseShptLine2@50002 : Record 7321;
+    BEGIN
+      // TM MD GAP017 13/11/17
+      WITH WhseShptLine2 DO BEGIN
+        SETRANGE("No.",WhseShptLine."No.");
+        IF NOT ISEMPTY THEN EXIT;
+        WhseShptHeader.GET(WhseShptLine."No.");
+        WhseShptHeader.Status := WhseShptHeader.Status::Open;
+        WhseShptHeader.SetHideValidationDialog(TRUE);  // TM MD i420 23/01/18
+        WhseShptHeader.DELETE(TRUE);
+        WhseShptHeader.SetHideValidationDialog(FALSE);  // TM MD i420 23/01/18
+      END;
+    END;
+
+    LOCAL PROCEDURE ConfirmPosting@50027(VAR ShipMgtBuffToPost@50000 : TEMPORARY Record 52102442);
+    BEGIN
+      // TM MD GAP017 13/11/17
+      IF NOT GUIALLOWED THEN EXIT;
+
+      IF ShipMgtBuffToPost.ISEMPTY THEN ERROR(NothingToPostErr);  // TM MD GAP017 14/11/17
+
+      IF NOT CONFIRM(ConfirmPostCaption,FALSE,ShipMgtBuffToPost.COUNT,ShipMgtBuffToPost.FIELDCAPTION("Shipment Mgt. Group No."),ShipMgtBuffToPost."Shipment Mgt. Group No.") THEN
+        ERROR('');
+    END;
+
+    LOCAL PROCEDURE CheckLoadNoIsSet@50019(VAR ShipMgtBuff@50000 : TEMPORARY Record 52102442);
+    VAR
+      ShipmentManagementGroup@50001 : Record 52102441;
+    BEGIN
+      // TM MD GAP017 13/11/17
+      IF NOT GUIALLOWED THEN EXIT;
+      WITH ShipmentManagementGroup DO BEGIN
+        GET(ShipMgtBuff."Shipment Mgt. Group No.");
+        IF "Load No." = '' THEN
+          IF NOT CONFIRM(ConfirmLoadNoCaption,FALSE,TABLECAPTION,"Entry No.") THEN
+            ERROR('');
+      END;
+    END;
+
+    PROCEDURE TranslateBufferSourceType@50030(BufferSourceType@50000 : Integer) SourceType : Integer;
+    BEGIN
+      // TM MD GAP017 13/11/17
+      CASE BufferSourceType OF
+        DATABASE::"Sales Header":
+          EXIT(DATABASE::"Sales Line");
+        DATABASE::"Purchase Header":
+          EXIT(DATABASE::"Purchase Line");
+        DATABASE::"Transfer Header":
+          EXIT(DATABASE::"Transfer Line");
+        ELSE
+          EXIT(BufferSourceType);
+      END;
+    END;
+
+    PROCEDURE TranslateNAVSourceType@50034(BufferSourceType@50000 : Integer) SourceType : Integer;
+    BEGIN
+      // TM MD GAP017 13/11/17
+      CASE BufferSourceType OF
+        DATABASE::"Sales Line":
+          EXIT(DATABASE::"Sales Header");
+        DATABASE::"Purchase Line":
+          EXIT(DATABASE::"Purchase Header");
+        DATABASE::"Transfer Line":
+          EXIT(DATABASE::"Transfer Header");
+        ELSE
+          EXIT(BufferSourceType);
+      END;
+    END;
+
+    LOCAL PROCEDURE CheckReportsAreSet@50025();
+    BEGIN
+      // TM MD GAP017 13/11/17
+      GetSalesSetup;
+      SalesSetup.TESTFIELD("Manifest Print Code");
+      SalesSetup.TESTFIELD("Packing List Print Code");
+      SalesSetup.TESTFIELD("Packing List Email Code");
+    END;
+
+    LOCAL PROCEDURE CheckOnlyOneGroupIsSelected@50033(VAR ShipMgtBuffToPost@50000 : TEMPORARY Record 52102442);
+    VAR
+      ShptMgtGroupNo@50001 : Integer;
+    BEGIN
+      // TM MD GAP017 13/11/17
+      WITH ShipMgtBuffToPost DO BEGIN
+        IF ISEMPTY THEN EXIT;
+        FINDFIRST;
+        ShptMgtGroupNo := "Shipment Mgt. Group No.";
+        SETFILTER("Shipment Mgt. Group No.",'<>%1',ShptMgtGroupNo);
+        IF FINDFIRST THEN
+          ERROR(SingleGroupPostingErrorCaption);
+        SETRANGE("Shipment Mgt. Group No.");
+        FINDSET;
+      END;
+    END;
+
+    LOCAL PROCEDURE AddAllGroupLinesToBuff@50043(VAR ShipmentManagementBuffer@50001 : Record 52102442;VAR ShipMgtBuffToPost@50000 : TEMPORARY Record 52102442);
+    VAR
+      ShipmentManagementBuffer2@50003 : TEMPORARY Record 52102442;
+    BEGIN
+      // TM MD GAP017 13/11/17
+      ShipmentManagementBuffer2.COPY(ShipmentManagementBuffer,TRUE);
+      ShipmentManagementBuffer2.RESET;
+      WITH ShipmentManagementBuffer2 DO BEGIN
+        RESET;
+        SETRANGE("Shipment Mgt. Group No.",ShipMgtBuffToPost."Shipment Mgt. Group No.");
+        SETRANGE(Indentation,2);
+        IF ISEMPTY THEN EXIT;
+        FINDSET;
+        REPEAT
+          IF NOT ShipMgtBuffToPost.GET("Entry No.") THEN BEGIN
+            ShipMgtBuffToPost := ShipmentManagementBuffer2;
+            ShipMgtBuffToPost.INSERT;
+          END;
+        UNTIL NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE RemoveLinesThatShouldNotBePostedFromBuff@50026(VAR ShipMgtBuffToPost@50000 : TEMPORARY Record 52102442);
+    BEGIN
+      // TM MD GAP017 13/11/17
+      WITH ShipMgtBuffToPost DO BEGIN
+        SETRANGE("Shipment No.",'');
+        //DELETEALL;  // rem TM MD i233 20/11/17
+        // TM MD i233 20/11/17 START
+        IF FINDSET(TRUE) THEN
+          REPEAT
+            IF SourceHasBeenShipped("Shipment Mgt. Group No.","Source Type","Document Type","Document No.","Document Line No.") THEN
+              DELETE;
+          UNTIL NEXT = 0;
+        // TM MD i233 20/11/17 END
+        SETRANGE("Shipment No.");
+      END;
+    END;
+
+    LOCAL PROCEDURE GetSourceDocLineShptGrpNo@50031(SourceType@50000 : Integer;SourceSubType@50001 : Option;SourceNo@50002 : Code[20];SourceLineNo@50003 : Integer) : Integer;
+    VAR
+      ShipmentManagementEntry@50004 : Record 52102443;
+    BEGIN
+      // TM MD GRP017 13/11/17
+      WITH ShipmentManagementEntry DO BEGIN
+        SETRANGE("Source Type",TranslateNAVSourceType(SourceType));
+        SETRANGE("Document Type",SourceSubType);
+        SETRANGE("Document No.",SourceNo);
+        SETRANGE("Document Line No.",SourceLineNo);
+        FINDFIRST;
+        EXIT("Shipment Mgt. Group No.");
+      END;
+    END;
+
+    LOCAL PROCEDURE UpdatePostedOnShptGroup@50037(ShptMgmtGroupNo@50000 : Integer);
+    VAR
+      ShipmentManagementGroup@50001 : Record 52102441;
+    BEGIN
+      ShipmentManagementGroup.GET(ShptMgmtGroupNo);
+      ShipmentManagementGroup.Posted := TRUE;
+      ShipmentManagementGroup.MODIFY;
+    END;
+
+    LOCAL PROCEDURE SourceHasBeenShipped@50038(ShptMgtGroupNo@50005 : Integer;SourceType@50000 : Integer;SourceSubtype@50002 : Option;SourceNo@50001 : Code[20];SourceLineNo@50003 : Integer) : Boolean;
+    VAR
+      ShipmentManagementEntry@50004 : Record 52102443;
+    BEGIN
+      // TM MD i233 20/11/17
+      WITH ShipmentManagementEntry DO BEGIN
+        GET(ShptMgtGroupNo,SourceType,SourceSubtype,SourceNo,SourceLineNo);
+        EXIT(NOT BSShipmentMgt.CheckEntryIsNotShipped(ShipmentManagementEntry));
+      END;
+    END;
+
+    [Integration]
+    LOCAL PROCEDURE OnUpdateShipmentMgtBufferTotal@50046(VAR HeaderBuffer@50000 : TEMPORARY Record 52102442;VAR LinesBuffer@50001 : TEMPORARY Record 52102442);
+    BEGIN
+    END;
+
+    LOCAL PROCEDURE UpdateShptMgtGroupNosOnRelatedDocuments@50040(ShptMgtGroupNo@50000 : Integer);
+    VAR
+      BSShipmentMgt@50001 : Codeunit 50026;
+    BEGIN
+      // TM MD i420 23/01/18
+      BSShipmentMgt.ResetSPMGroup(ShptMgtGroupNo);
+    END;
+
+    LOCAL PROCEDURE CheckForPartShipment@50045(VAR ShipmentManagementBuffer@50000 : Record 52102442);
+    VAR
+      WhseShptHeaderTmp@50003 : TEMPORARY Record 7320;
+      WhseShptLine@50001 : Record 7321;
+      FoundPartShip@50002 : Boolean;
+    BEGIN
+      //TM LV i534 25/01/18
+      CLEAR(WhseShptHeaderTmp);
+      IF ShipmentManagementBuffer.FIND('-') THEN REPEAT
+        GetExistingWhseShptLine(ShipmentManagementBuffer,WhseShptLine);
+        FoundPartShip := WhseShptLine."Qty. Shipped" + WhseShptLine."Qty. to Ship" < WhseShptLine.Quantity;
+      UNTIL (ShipmentManagementBuffer.NEXT = 0) OR FoundPartShip;
+
+      IF FoundPartShip THEN
+        IF NOT CONFIRM(STRSUBSTNO(PostPartShipmentConf),FALSE) THEN
+          ERROR('');
+    END;
+
+    LOCAL PROCEDURE RepointWhseTracking@50047(WhseShptLine@50000 : Record 7321;ToWhseShptLine@50002 : Record 7321);
+    VAR
+      WhseItemTrackingLine@50001 : Record 6550;
+    BEGIN
+      //TM TE i420 29/11/18
+      WITH WhseItemTrackingLine DO BEGIN
+        RESET;
+        SETRANGE("Item No.",WhseShptLine."Item No.");
+        SETRANGE("Source Type",DATABASE::"Warehouse Shipment Line");
+        SETRANGE("Source ID",WhseShptLine."No.");
+        IF FINDSET THEN
+          MODIFYALL("Source ID",ToWhseShptLine."No.");
+      END;
+    END;
+
+    LOCAL PROCEDURE PrintCustomDeclaration@50049(WarehouseShipmentHeader@50000 : Record 7320);
+    VAR
+      PostedWhseShipmentHeader@50001 : Record 7322;
+      PostedWhseShipmentLine@50003 : Record 7323;
+      TransferShipmentHeader@50004 : Record 5744;
+      TransferInvoiceBS@50005 : Report 50097;
+      SalesShipmentHeader@50002 : Record 110;
+      SalesCustomsInvoiceBS@50006 : Report 50085;
+      SalesCustomsInvoiceNonUK@50007 : Report 50086;
+      TransferInvoiceBSNonUK@50008 : Report 50098;
+    BEGIN
+      //TCS Brexit
+      PostedWhseShipmentHeader.SETRANGE("Whse. Shipment No.", WarehouseShipmentHeader."No.");
+      IF PostedWhseShipmentHeader.FINDFIRST THEN BEGIN
+        PostedWhseShipmentLine.SETRANGE("No.",PostedWhseShipmentHeader."No.");
+        IF PostedWhseShipmentLine.FINDSET THEN BEGIN
+          REPEAT
+            IF CheckShipmentHeaderExist(PostedWhseShipmentLine) THEN BEGIN
+              IF TransferShipmentHeader.GET(PostedWhseShipmentLine."Posted Source No.") THEN BEGIN
+                IF TransferInvoiceBS.CountLinesUK(TransferShipmentHeader."No.",'006') THEN BEGIN
+                  CLEAR(TransferInvoiceBS);
+                  TransferInvoiceBS.SetTransHeader(TransferShipmentHeader."No.");
+                  TransferInvoiceBS.PassCountryOfOrigin('006');
+                  TransferInvoiceBS.USEREQUESTPAGE(FALSE);
+                  TransferInvoiceBS.RUNMODAL;
+                END;
+                IF TransferInvoiceBS.CountLinesUK(TransferShipmentHeader."No.",'001') THEN BEGIN
+                  CLEAR(TransferInvoiceBS);
+                  TransferInvoiceBS.SetTransHeader(TransferShipmentHeader."No.");
+                  TransferInvoiceBS.PassCountryOfOrigin('001');
+                  TransferInvoiceBS.USEREQUESTPAGE(FALSE);
+                  TransferInvoiceBS.RUNMODAL;
+                END;
+                IF TransferInvoiceBS.CountLinesUK(TransferShipmentHeader."No.",'004') THEN BEGIN
+                  CLEAR(TransferInvoiceBS);
+                  TransferInvoiceBS.SetTransHeader(TransferShipmentHeader."No.");
+                  TransferInvoiceBS.PassCountryOfOrigin('004');
+                  TransferInvoiceBS.USEREQUESTPAGE(FALSE);
+                  TransferInvoiceBS.RUNMODAL;
+                END;
+                IF TransferInvoiceBS.CountLinesUK(TransferShipmentHeader."No.",'005') THEN BEGIN
+                  CLEAR(TransferInvoiceBS);
+                  TransferInvoiceBS.SetTransHeader(TransferShipmentHeader."No.");
+                  TransferInvoiceBS.PassCountryOfOrigin('005');
+                  TransferInvoiceBS.USEREQUESTPAGE(FALSE);
+                  TransferInvoiceBS.RUNMODAL;
+                END;
+                IF TransferInvoiceBS.CountLinesUK(TransferShipmentHeader."No.",'011') THEN BEGIN
+                  CLEAR(TransferInvoiceBS);
+                  TransferInvoiceBS.SetTransHeader(TransferShipmentHeader."No.");
+                  TransferInvoiceBS.PassCountryOfOrigin('011');
+                  TransferInvoiceBS.USEREQUESTPAGE(FALSE);
+                  TransferInvoiceBS.RUNMODAL;
+                END;
+                IF TransferInvoiceBS.CountLinesUK(TransferShipmentHeader."No.",'052') THEN BEGIN
+                  CLEAR(TransferInvoiceBS);
+                  TransferInvoiceBS.SetTransHeader(TransferShipmentHeader."No.");
+                  TransferInvoiceBS.PassCountryOfOrigin('052');
+                  TransferInvoiceBS.USEREQUESTPAGE(FALSE);
+                  TransferInvoiceBS.RUNMODAL;
+                END;
+
+                IF TransferInvoiceBSNonUK.CountLinesNonUK(TransferShipmentHeader."No.") THEN BEGIN
+                  CLEAR(TransferInvoiceBSNonUK);
+                  TransferInvoiceBSNonUK.SetTransHeader(TransferShipmentHeader."No.");
+                  TransferInvoiceBSNonUK.USEREQUESTPAGE(FALSE);
+                  TransferInvoiceBSNonUK.RUNMODAL;
+                END;
+
+              END;
+              IF SalesShipmentHeader.GET(PostedWhseShipmentLine."Posted Source No.") THEN BEGIN
+                IF CheckIfPrintCustomInv(PostedWhseShipmentLine,SalesShipmentHeader) THEN BEGIN
+                  IF SalesCustomsInvoiceBS.PrintCustomDeclarationUK(SalesShipmentHeader,'006') THEN BEGIN //new code
+                    CLEAR(SalesCustomsInvoiceBS);
+                    SalesCustomsInvoiceBS.SetSalesHeader(SalesShipmentHeader."No.");
+                    SalesCustomsInvoiceBS.PassCountryOfOrigin('006');
+                    SalesCustomsInvoiceBS.USEREQUESTPAGE(FALSE);
+                    SalesCustomsInvoiceBS.RUNMODAL;
+                  END;
+                  IF SalesCustomsInvoiceBS.PrintCustomDeclarationUK(SalesShipmentHeader,'001') THEN BEGIN //new code
+                    CLEAR(SalesCustomsInvoiceBS);
+                    SalesCustomsInvoiceBS.SetSalesHeader(SalesShipmentHeader."No.");
+                    SalesCustomsInvoiceBS.PassCountryOfOrigin('001');
+                    SalesCustomsInvoiceBS.USEREQUESTPAGE(FALSE);
+                    SalesCustomsInvoiceBS.RUNMODAL;
+                  END;
+                  IF SalesCustomsInvoiceBS.PrintCustomDeclarationUK(SalesShipmentHeader,'004') THEN BEGIN //new code
+                    CLEAR(SalesCustomsInvoiceBS);
+                    SalesCustomsInvoiceBS.SetSalesHeader(SalesShipmentHeader."No.");
+                    SalesCustomsInvoiceBS.PassCountryOfOrigin('004');
+                    SalesCustomsInvoiceBS.USEREQUESTPAGE(FALSE);
+                    SalesCustomsInvoiceBS.RUNMODAL;
+                  END;
+                  IF SalesCustomsInvoiceBS.PrintCustomDeclarationUK(SalesShipmentHeader,'005') THEN BEGIN //new code
+                    CLEAR(SalesCustomsInvoiceBS);
+                    SalesCustomsInvoiceBS.SetSalesHeader(SalesShipmentHeader."No.");
+                    SalesCustomsInvoiceBS.PassCountryOfOrigin('005');
+                    SalesCustomsInvoiceBS.USEREQUESTPAGE(FALSE);
+                    SalesCustomsInvoiceBS.RUNMODAL;
+                  END;
+                  IF SalesCustomsInvoiceBS.PrintCustomDeclarationUK(SalesShipmentHeader,'011') THEN BEGIN //new code
+                    CLEAR(SalesCustomsInvoiceBS);
+                    SalesCustomsInvoiceBS.SetSalesHeader(SalesShipmentHeader."No.");
+                    SalesCustomsInvoiceBS.PassCountryOfOrigin('011');
+                    SalesCustomsInvoiceBS.USEREQUESTPAGE(FALSE);
+                    SalesCustomsInvoiceBS.RUNMODAL;
+                  END;
+                  IF SalesCustomsInvoiceBS.PrintCustomDeclarationUK(SalesShipmentHeader,'052') THEN BEGIN //new code
+                    CLEAR(SalesCustomsInvoiceBS);
+                    SalesCustomsInvoiceBS.SetSalesHeader(SalesShipmentHeader."No.");
+                    SalesCustomsInvoiceBS.PassCountryOfOrigin('052');
+                    SalesCustomsInvoiceBS.USEREQUESTPAGE(FALSE);
+                    SalesCustomsInvoiceBS.RUNMODAL;
+                  END;
+
+                  IF SalesCustomsInvoiceNonUK.PrintCustomDeclarationNonUK(SalesShipmentHeader) THEN BEGIN
+                    CLEAR(SalesCustomsInvoiceNonUK);
+                    SalesCustomsInvoiceNonUK.SetSalesHeader(SalesShipmentHeader."No.");
+                    SalesCustomsInvoiceNonUK.USEREQUESTPAGE(FALSE);
+                    SalesCustomsInvoiceNonUK.RUNMODAL;
+                  END;
+
+                END;
+              END;
+            END;
+          UNTIL PostedWhseShipmentLine.NEXT = 0;
+        END;
+      END;
+    END;
+
+    LOCAL PROCEDURE CheckShipmentHeaderExist@50052(PostedWhseShipmentLine@50000 : Record 7323) : Boolean;
+    BEGIN
+      //TCS Brexit
+      IF NOT TempTransferShipmentHeader.GET(PostedWhseShipmentLine."Posted Source No.") THEN BEGIN
+        TempTransferShipmentHeader.INIT;
+        TempTransferShipmentHeader."No." := PostedWhseShipmentLine."Posted Source No.";
+        TempTransferShipmentHeader.INSERT;
+        EXIT(TRUE);
+      END;
+      EXIT(FALSE);
+    END;
+
+    LOCAL PROCEDURE CheckIfPrintCustomInv@50051(PostedWhseShipmentLine@50000 : Record 7323;SalesShipmentHeader@50001 : Record 110) : Boolean;
+    VAR
+      Customer@50002 : Record 18;
+    BEGIN
+      //TCS Brexit
+      //IF Customer.GET(SalesShipmentHeader."Sell-to Customer No.") THEN;
+      //IF ((Customer.EU) AND (PostedWhseShipmentLine."Location Code" = 'A58')) OR
+       // ((NOT Customer.EU) AND (PostedWhseShipmentLine."Location Code" = 'A75')) THEN
+        //EXIT(TRUE);
+
+      //EXIT(FALSE);
+      //TCS Brexit
+      IF Customer.GET(SalesShipmentHeader."Sell-to Customer No.") THEN;
+
+        IF ((PostedWhseShipmentLine."Location Code" = 'A58') AND (Customer.EU)) OR (( PostedWhseShipmentLine."Location Code" = 'A58') AND ( COPYSTR(SalesShipmentHeader."Ship-to Post Code", 1, 2) = 'BT'))
+
+
+            OR (( PostedWhseShipmentLine."Location Code" = 'A58')  AND (Customer."Country/Region Code" = '007'))
+
+           OR ((PostedWhseShipmentLine."Location Code" = 'A58')  AND (SalesShipmentHeader."Ship-to Country/Region Code" = '038'))
+           OR ((PostedWhseShipmentLine."Location Code" = 'A58')  AND (SalesShipmentHeader."Ship-to Country/Region Code" = '002'))
+           OR ((PostedWhseShipmentLine."Location Code" = 'A58')  AND (SalesShipmentHeader."Ship-to Country/Region Code" = '068'))
+           OR ((PostedWhseShipmentLine."Location Code" = 'A58')  AND (SalesShipmentHeader."Ship-to Country/Region Code" = '092'))
+           OR ((PostedWhseShipmentLine."Location Code" = 'A58')  AND (SalesShipmentHeader."Ship-to Country/Region Code" = '600'))
+           OR ((PostedWhseShipmentLine."Location Code" = 'A58')  AND (SalesShipmentHeader."Ship-to Country/Region Code" = '061'))
+           OR ((PostedWhseShipmentLine."Location Code" = 'A58')  AND (SalesShipmentHeader."Ship-to Country/Region Code" = '008'))
+           OR ((PostedWhseShipmentLine."Location Code" = 'A58')  AND (SalesShipmentHeader."Ship-to Country/Region Code" = '053'))
+           OR ((PostedWhseShipmentLine."Location Code" = 'A58')  AND (SalesShipmentHeader."Ship-to Country/Region Code" = '032'))
+           OR ((PostedWhseShipmentLine."Location Code" = 'A58')  AND (SalesShipmentHeader."Ship-to Country/Region Code" = '001'))
+           OR ((PostedWhseShipmentLine."Location Code" = 'A58')  AND (SalesShipmentHeader."Ship-to Country/Region Code" = '004'))
+           OR ((PostedWhseShipmentLine."Location Code" = 'A58')  AND (SalesShipmentHeader."Ship-to Country/Region Code" = '009'))
+           OR ((PostedWhseShipmentLine."Location Code" = 'A58')  AND (SalesShipmentHeader."Ship-to Country/Region Code" = '064'))
+           OR ((PostedWhseShipmentLine."Location Code" = 'A58')  AND (SalesShipmentHeader."Ship-to Country/Region Code" = '007'))
+           OR ((PostedWhseShipmentLine."Location Code" = 'A58')  AND (SalesShipmentHeader."Ship-to Country/Region Code" = '005'))
+           OR ((PostedWhseShipmentLine."Location Code" = 'A58')  AND (SalesShipmentHeader."Ship-to Country/Region Code" = '054'))
+           OR ((PostedWhseShipmentLine."Location Code" = 'A58')  AND (SalesShipmentHeader."Ship-to Country/Region Code" = '055'))
+           OR ((PostedWhseShipmentLine."Location Code" = 'A58')  AND (SalesShipmentHeader."Ship-to Country/Region Code" = '019'))
+           OR ((PostedWhseShipmentLine."Location Code" = 'A58')  AND (SalesShipmentHeader."Ship-to Country/Region Code" = '046'))
+           OR ((PostedWhseShipmentLine."Location Code" = 'A58')  AND (SalesShipmentHeader."Ship-to Country/Region Code" = '003'))
+           OR ((PostedWhseShipmentLine."Location Code" = 'A58')  AND (SalesShipmentHeader."Ship-to Country/Region Code" = '060'))
+           OR ((PostedWhseShipmentLine."Location Code" = 'A58')  AND (SalesShipmentHeader."Ship-to Country/Region Code" = '010'))
+           OR ((PostedWhseShipmentLine."Location Code" = 'A58')  AND (SalesShipmentHeader."Ship-to Country/Region Code" = '066'))
+           OR ((PostedWhseShipmentLine."Location Code" = 'A58')  AND (SalesShipmentHeader."Ship-to Country/Region Code" = '063'))
+           OR ((PostedWhseShipmentLine."Location Code" = 'A58')  AND (SalesShipmentHeader."Ship-to Country/Region Code" = '091'))
+           OR ((PostedWhseShipmentLine."Location Code" = 'A58')  AND (SalesShipmentHeader."Ship-to Country/Region Code" = '011'))
+           OR ((PostedWhseShipmentLine."Location Code" = 'A58')  AND (SalesShipmentHeader."Ship-to Country/Region Code" = '030'))
+
+
+
+            OR ((PostedWhseShipmentLine."Location Code" = 'A75') AND (NOT Customer.EU) AND (Customer."Country/Region Code" <> '007'))
+             OR ((PostedWhseShipmentLine."Location Code" = 'A75') AND ( COPYSTR(SalesShipmentHeader."Ship-to Post Code", 1, 2) <> 'BT') AND (Customer."Country/Region Code" <> '007')) THEN
+             BEGIN
+               EXIT(TRUE);
+             END;
+
+
+
+      //IF ((Customer.EU) AND (PostedWhseShipmentLine."Location Code" = 'A58')) OR
+        //((NOT Customer.EU) AND (PostedWhseShipmentLine."Location Code" = 'A75')) THEN
+        //EXIT(TRUE);
+
+      EXIT(FALSE);
+    END;
+
+    BEGIN
+    {
+      TM AKH GAP006 16/08/17 "Shipment Management"
+        Functions modified
+        - MoveDropToNewGroup
+        - MoveLinesToNewGroup
+
+      TM DTH BS.GAP017 29/09/17 Added fuunctions
+        - ConsolidateWharehouseShipmentLines
+        - GetNextWarehouseShipmentLineNo
+
+      TM MD GAP006 03/10/17 'Extending Shipment Management'
+        - i164: shipment date as filter
+        * modified local variable ShipmentDateFilter [Date -> Text] in CalcShipmentMgtBuffer()
+        * modified local variable ShipmentDateFilter [Date -> Text] in AddShipmentMgtEntryToBuffer()
+        * modified code in AddShipmentMgtEntryToBuffer()
+
+      TM MD GAP006 04/10/17 'Extending Shipment Management'
+        - i162: shipment management group longest length and total weight calculation
+        * added code to AddPurchaseDocumentsToShipmentMgtBuffer()
+
+      TM MD GAP006 10/10/17 'Extending Shipment Management'
+        - i168: show option
+        * added global variable ShowOption [Option]
+        * added function SetShowOption() [Local = False]
+        * added code to AddShipmentMgtEntryToBuffer()
+
+      TM DTH BS.GAP016 13/10/17
+        Modify function
+        - ConsolidateWharehouseShipmentLines, added group by ship-to code, update new fields Customer No. & Ship-to Code
+
+      TM- DTH BS.GAP015 19/10/17
+        Modify function
+        - PostWarehouseShipment, added DD print functionality
+        Added function
+        - PrintPackingList
+        - PrintManifest
+        - GetTestCertDefault
+        - PrintToDocumentDelivery
+        - GetSalesSetup
+
+      TM VZ CR14 24/10/17 "XPO"
+        Function modified
+        - AddDropNoToShipmentMgtBuffer
+
+      TM VZ 01/11/17 CR61 "Shipment Management Screen Order by Shipment Time"
+        Function modified
+        - AddShipmentMgtEntryToBuffer
+
+      TM MD 08/11/17 i218 'Misc. Shipment Mangement Fixes'
+        - unable to create and register pick and post whse. shpt. for purch. return orders
+        * added call parameter PurchaseHeader [Record "Purchase Header"] to MarkDocumentHeaderAndWhseShptHeaderFromShipmentMgtBuffer()
+        * added code to MarkDocumentHeaderAndWhseShptHeaderFromShipmentMgtBuffer()
+        * added local variable PurchaseHeader [Record "Purchase Header"] to CreatePick()
+        * added code to CreatePick()
+        * added local variable PurchaseHeader [Record "Purchase Header"] to RegisterPick()
+        * added code to RegisterPick()
+        * added local variable PurchaseHeader [Record "Purchase Header"] to PostWarehouseShipments()
+
+        - whse. shipment no. is not retrieved for purch. return order lines
+        * added local variable WhseShptLine [Record "Warehouse Shipment Line"] to AddPurchaseDocumentsToShipmentMgtBuffer()
+        * added local variable WhseShptLineExists [Boolean] to AddPurchaseDocumentsToShipmentMgtBuffer()
+        * added code to AddPurchaseDocumentsToShipmentMgtBuffer()
+
+      TM MD GAP017 13/11/17 'Whse. shipment posting changes'
+        - create and post whse. shpt. per drop
+        * added permission to rm [Registered Whse. Activity Line, Warehouse Entry, Registered Invt. Movement Line]
+        * added global text constant ConfirmPostCaption
+        * added global text constant ConfirmLoadNoCaption
+        * added global text constant SingleGroupPostingErrorCaption
+        * added function CheckLinesAreReadyForPosting()
+        * added function CheckLineHasNoPendingActivity()
+        * added function CheckLineIsReadyForPosting()
+        * added function CreateWhseShptHeadersToPost()
+        * added function CheckExistingWhseShptIsConsistent()
+        * added function CheckExistingWhseShptLinesAreConsistent()
+        * added function CheckExistingWhseShptHeaderIsConsistent()
+        * added function GetDropNoForShipmentMgtBuffer()
+        * added function GetExistingWhseShptLine()
+        * added function CreateNewWhseShptHeaderForDrop()
+        * added function UpdateWhseShptHdrFieldsFromShptGroupNo()
+        * added function MoveExistingShptLineToDropShpt()
+        * added function MoveRegWhseActLines()
+        * added function MoveRegInvMvtLines()
+        * added function MoveWhseEntries()
+        * added function DeleteWhseShptHeaderIfNoMoreLines()
+        * added function ConfirmPosting()
+        * added function CheckLoadNoIsSet()
+        * added function TranslateBufferSourceType()
+        * added function TranslateNAVSourceType()
+        * added function CheckReportsAreSet()
+        * added function CheckOnlyOneGroupIsSelected()
+        * added function AddAllGroupLinesToBuff()
+        * added function RemoveLinesThatShouldNotBePostedFromBuff()
+        * added function GetSourceDocLineShptGrpNo()
+        * added code to PostWarehouseShipments()
+        * modified code in MarkDocumentHeaderAndWhseShptHeaderFromShipmentMgtBuffer()
+
+      TM MD GAP017 14/11/17 'Whse. shipment posting changes'
+        - error if there is nothing to post
+        * added code to ConfirmPosting()
+
+      TM MD i218 15/11/17 'Misc. Shipment Mangement Fixes'
+        - hide shipped lines
+        * added Event Publisher BeforeAddPurchaseDocumentLineToShipmentMgtBuffer()
+        * added Event Publisher BeforeAddTransferDocumentLineToShipmentMgtBuffer()
+        * added local variable Handled [Boolean] to AddPurchaseDocumentsToShipmentMgtBuffer()
+        * added local variable AddPurchaseLine [Boolean] to AddPurchaseDocumentsToShipmentMgtBuffer()
+        * added code to AddPurchaseDocumentsToShipmentMgtBuffer()
+        * added local variable Handled [Boolean] to AddTransferOrdersToShipmentMgtBuffer()
+        * added local variable AddTransferLine [Boolean] to AddTransferOrdersToShipmentMgtBuffer()
+        * added code to AddTransferOrdersToShipmentMgtBuffer()
+        * modified function TranslateBufferSourceType() [Local -> False]
+        * modified function TranslateNAVSourceType() [Local -> False]
+
+      TM MD i233 20/11/17 'Misc. Shipment Mangement Fixes'
+        - only post when whse. shipment is created and everything is picked and load is assigned
+        * added code to CheckLineIsReadyForPosting()
+        * added function CheckGroupLoadIsAssigned()
+        * added code to CheckLinesAreReadyForPosting()
+        * added function SourceHasBeenShipped()
+        * modified code in RemoveLinesThatShouldNotBePostedFromBuff()
+
+      TM MD i240 04/12/17 'Support user-printer selection for queued DD processing'
+        * added call parameter SendToSystemPrinter [Boolean] to PrintToDocumentDelivery()
+        * modified reference to PrintToDocumentDelivery() to utilise new call parameter [True for printing, False for e-mailing]
+        * added code to PrintToDocumentDelivery()
+
+      TM MD i302 08/12/17 'Check documents before posting via shipment management'
+        * added code to PostWarehouseShipments()
+        * added function CheckDocumentsAreReadyForPosting()
+        * added function CheckDocumentIsReadyForPosting()
+        * added function CheckSalesHeaderIsReadyForPosting()
+        * added function CheckPurchHeaderIsReadyForPosting()
+        * added function CheckTransHeaderIsReadyForPosting()
+
+      TM LV I387 03/01/18 Printing Manifest through DD no longer supported
+      TM LV I374 04/01/18 Change Destination Name on Shipment Management pages
+      TM LV I382 04/01/18 Changed function AddShipmentMgtEntryToBuffer
+
+      TM MD i409 04/01/18 'Unable to post whse. shpt. from shipment management'
+        * added code to MoveRegWhseActLines()
+        * added code to MoveRegInvMvtLines()
+        * added code to MoveWhseEntries()
+        * added local variable Location [Record "Location"] to MoveExistingShptLineToDropShpt()
+        * added code to MoveExistingShptLineToDropShpt()
+
+      TM LV I416 09/01/18 Changed function PrintPackingList
+      TM LV I499 16/01/18 Changed function CheckLinesAreReadyForPosting
+
+      TM MD i508 23/01/18 'Update posting date on whse. shpt. when posting from shpt. mgt'
+        * added code to PostWarehouseShipments()
+
+      TM MD i420 23/01/18 'Partial shipment support for Shpt. Mgt.'
+        * added function MoveWhseActLines()
+        * added function UpdateShptMgtGroupNosOnRelatedDocuments()
+        * added local variable DummyWhseActLine [Record "Warehouse Activity Line"] [Temporary] to MoveExistingShptLineToDropShpt()
+        * added code to PostWarehouseShipments()
+        * added code to MoveExistingShptLineToDropShpt()
+        * added code to DeleteWhseShptHeaderIfNoMoreLines()
+        * modified code in MoveRegWhseActLines() to filter for Original Whse. Doc. instead
+        * modified code in MoveRegInvMvtLines() to filter for Original Whse. Doc. instead
+        * modified code in MoveWhseEntries() to filter for Original Whse. Doc. instead
+
+      TM LV i534 25/01/18 Modified function PostWarehouseShipments
+                          Added function CheckForPartShipment
+      TM TE i420 29/11/18 Partial Shipment
+        * modified MoveExistingShptLineToDropShpt
+        * added RepointWhseTracking
+
+      TCS SR Brexit 25/02/19 Updated code in function "AddSalesDocumentsToShipmentMgtBuffer" fill in values in fields
+        "Port of Loading" and "Port of Discharge".
+
+      TCS KR Brexit 1409 22/02/21 Added new function "PrintCustomDeclaration" for print split custom invoices
+    }
+    END.
+  }
+}
+
