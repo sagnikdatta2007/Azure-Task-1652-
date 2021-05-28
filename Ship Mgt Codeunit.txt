@@ -2,10 +2,10 @@ OBJECT Codeunit 52102437 Shipment Mgt. Buffer
 {
   OBJECT-PROPERTIES
   {
-    Date=23/02/21;
-    Time=08:06:57;
+    Date=11/05/21;
+    Time=13:22:48;
     Modified=Yes;
-    Version List=SPM1.1.1,GAP006,GAP017,CR14,CR61,i240,I374,I382,i409,I416,I499,i508,i420,i534,Brexit,1164,1409;
+    Version List=SPM1.1.1,GAP006,GAP017,CR14,CR61,i240,I374,I382,i409,I416,I499,i508,i420,i534,Brexit,1164,1409,1652;
   }
   PROPERTIES
   {
@@ -1498,8 +1498,10 @@ OBJECT Codeunit 52102437 Shipment Mgt. Buffer
       WITH PostedWhseShipmentHeader DO BEGIN
         SETRANGE("Whse. Shipment No.", WarehouseShipmentHeader."No.");
         IF FINDFIRST THEN BEGIN
-          PrintToDocumentDelivery(PostedWhseShipmentHeader, SalesSetup."Packing List Email Code",FALSE);
-          PrintToDocumentDelivery(PostedWhseShipmentHeader, SalesSetup."Packing List Print Code",TRUE);
+          IF PostedWhseShipmentHeader."Location Code" <> 'A75' THEN BEGIN //TCS KR A1652 11/05/21 Start
+            PrintToDocumentDelivery(PostedWhseShipmentHeader, SalesSetup."Packing List Email Code",FALSE);
+            PrintToDocumentDelivery(PostedWhseShipmentHeader, SalesSetup."Packing List Print Code",TRUE);
+          END; //TCS KR A1652 11/05/21 End
         END;
       END;
     END;
@@ -2574,6 +2576,8 @@ OBJECT Codeunit 52102437 Shipment Mgt. Buffer
         "Port of Loading" and "Port of Discharge".
 
       TCS KR Brexit 1409 22/02/21 Added new function "PrintCustomDeclaration" for print split custom invoices
+
+      TCS KR A1652 11/05/21 Test Cert Printing needs to be stopped from Lisburn from Planned shipment screen.
     }
     END.
   }
